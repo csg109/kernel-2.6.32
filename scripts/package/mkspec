@@ -1,0 +1,217 @@
+#!/bin/sh
+#
+#	Output a simple RPM spec file that uses no fancy features requiring
+#	RPM v4. This is intended to work with any RPM distro.
+#
+#	The only gothic bit here is redefining install_post to avoid
+#	stripping the symbols from files in the kernel which we want
+#
+#	Patched for non-x86 by Opencon (L) 2002 <opencon@rio.skydome.net>
+#
+
+if [ "$1" = "prebuilt" ]; then
+	PREBUILT=true
+else
+	PREBUILT=false
+fi
+
+# starting to output the spec
+if [ "`grep CONFIG_DRM=y .config | cut -f2 -d\=`" = "y" ]; then
+	PROVIDES=kernel-drm
+fi
+
+PROVIDES="$PROVIDES kernel-$KERNELRELEASE"
+# add by minw
+KERNEL_VERSION=`echo ${KERNELRELEASE} | awk '{split($1,version,"-");print version[1]}'`
+KERNEL_RELEASE=`echo ${KERNELRELEASE} | awk '{split($1,version,"-");print version[2]}'`
+# add by minw
+
+__KERNELRELEASE=`echo $KERNELRELEASE | sed -e "s/-//g"`
+
+echo "Name: kernel"
+echo "Summary: The Linux Kernel"
+echo "Version: ${KERNEL_VERSION}"
+#echo "Version: 2.41"
+#echo "Version: $__KERNELRELEASE"
+# we need to determine the NEXT version number so that uname and
+# rpm -q will agree
+echo "Release: ${KERNEL_RELEASE}"
+#echo "Release: `. $srctree/scripts/mkversion`"
+echo "License: GPL"
+echo "Group: System Environment/Kernel"
+echo "Vendor: The Linux Community"
+echo "URL: http://www.kernel.org"
+
+if ! $PREBUILT; then
+echo "Source: kernel-$__KERNELRELEASE.tar.gz"
+fi
+
+echo "BuildRoot: %{_tmppath}/%{name}-%{PACKAGE_VERSION}-root"
+echo "Provides: $PROVIDES"
+echo "%define __spec_install_post /usr/lib/rpm/brp-compress || :"
+echo "%define debug_package %{nil}"
+echo ""
+
+# add for devel and headers packets -start
+echo "%package devel"
+echo "Summary: Development package for building kernel modules to match the kernel"
+echo "Group: System Environment/Kernel"
+echo "%description devel"
+echo "This package provides kernel headers and makefiles sufficient to build modules against the kernel package"
+echo ""
+# add for devel and headers packets -end
+
+echo "%description"
+echo "The Linux Kernel, the operating system core itself"
+echo ""
+
+if ! $PREBUILT; then
+echo "%prep"
+echo "%setup -q"
+echo ""
+fi
+
+echo "%build"
+
+if ! $PREBUILT; then
+echo "make clean && make %{?_smp_mflags}"
+echo ""
+fi
+
+echo "%install"
+echo "%ifarch ia64"
+echo 'mkdir -p $RPM_BUILD_ROOT/boot/efi $RPM_BUILD_ROOT/lib/modules'
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/firmware'
+echo "%else"
+echo 'mkdir -p $RPM_BUILD_ROOT/boot $RPM_BUILD_ROOT/lib/modules'
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/firmware'
+echo "%endif"
+
+echo 'INSTALL_MOD_PATH=$RPM_BUILD_ROOT make %{?_smp_mflags} KBUILD_SRC= modules_install'
+echo "%ifarch ia64"
+echo 'cp $KBUILD_IMAGE $RPM_BUILD_ROOT'"/boot/efi/vmlinuz-$KERNELRELEASE"
+echo 'ln -s '"efi/vmlinuz-$KERNELRELEASE" '$RPM_BUILD_ROOT'"/boot/"
+echo "%else"
+echo "%ifarch ppc64"
+echo "cp vmlinux arch/powerpc/boot"
+echo "cp arch/powerpc/boot/"'$KBUILD_IMAGE $RPM_BUILD_ROOT'"/boot/vmlinuz-$KERNELRELEASE"
+echo "%else"
+#KBUILD_IMAGE = arch/x86/boot/bzImage
+echo 'cp $KBUILD_IMAGE $RPM_BUILD_ROOT'"/boot/vmlinuz-$KERNELRELEASE"
+echo "%endif"
+echo "%endif"
+
+echo 'cp System.map $RPM_BUILD_ROOT'"/boot/System.map-$KERNELRELEASE"
+
+echo 'cp .config $RPM_BUILD_ROOT'"/boot/config-$KERNELRELEASE"
+
+echo "%ifnarch ppc64"
+echo 'cp vmlinux vmlinux.orig'
+echo 'bzip2 -9 vmlinux'
+echo 'mv vmlinux.bz2 $RPM_BUILD_ROOT'"/boot/vmlinux-$KERNELRELEASE.bz2"
+echo 'mv vmlinux.orig vmlinux'
+echo "%endif"
+
+# add for devel and headers packets -devel start
+KernelVer=$KERNELRELEASE
+echo 'rm -rf $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo 'rm -rf $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/source"
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo '(cd $RPM_BUILD_ROOT/lib/modules/'"$KernelVer ; ln -s build source)"
+echo "# dirs for additional modules per module-init-tools, kbuild/modules.txt"
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/extra"
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/updates"
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/weak-updates"
+echo "# first copy everything"
+echo 'cp --parents `find  -type f -name "Makefile*" -o -name "Kconfig*"` $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo 'cp Module.symvers $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo 'cp System.map $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo "if [ -s Module.markers ]; then"
+echo '     cp Module.markers $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo "fi"
+echo "# then drop all but the needed Makefiles/Kconfig files"
+echo 'rm -rf $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/Documentation"
+echo 'rm -rf $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/scripts"
+echo 'rm -rf $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include"
+echo 'cp .config $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+echo 'cp -a scripts $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+
+Arch=x86_64
+asmarch=x86
+echo 'if [ -d arch/'"$Arch/scripts ]; then"
+echo '   cp -a arch/'"$Arch"'/scripts $RPM_BUILD_ROOT/lib/modules/'"$KernelVer"'/build/arch/%{_arch} || :'
+echo " fi"
+echo 'if [ -f arch/'"$Arch"'/*lds ]; then'
+echo    'cp -a arch/'"$Arch"'/*lds $RPM_BUILD_ROOT/lib/modules/'"$KernelVer"'/build/arch/%{_arch}/ || :'
+echo "fi"
+echo 'rm -f $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/scripts/*.o"
+echo 'rm -f $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/scripts/*/*.o"
+
+echo 'if [ -d arch/'"$asmarch"'/include ]; then'
+echo ' cp -a --parents arch/'"$asmarch"'/include $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/"
+echo "fi"
+
+echo 'mkdir -p $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include"
+echo 'cd include'
+echo  'cp -a * $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include"
+
+#echo  'cp -a acpi config crypto keys linux math-emu media mtd net pcmcia rdma rxrpc scsi sound trace video drm asm-generic $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include"
+#echo  'asmdir=$(readlink asm)'
+#echo  'if [ "$asmdir"x != x ] ; then'
+#echo  ' cp -a $asmdir $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include/"
+#echo  ' pushd $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include"
+#echo  ' ln -s $asmdir asm'
+#echo  ' popd'
+#echo  "fi"
+
+# Make sure the Makefile and version.h have a matching timestamp so that
+# external modules can be built
+echo 'touch -r $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/Makefile " '$RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include/linux/version.h"
+echo  'touch -r $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/.config " '$RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include/linux/autoconf.h"
+# Copy .config to include/config/auto.conf so "make prepare" is unnecessary.
+echo  'cp $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/.config " '$RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build/include/config/auto.conf"
+echo   " cd .."
+# remove all svn files
+echo 'find $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build -name \".svn\" | xargs -n 1 rm -rf"
+# Move the devel headers out of the root file system
+echo 'mkdir -p $RPM_BUILD_ROOT/usr/src/kernels'
+DevelDir='/usr/src/kernels/'"$KernelVer"
+echo 'mv $RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build " '$RPM_BUILD_ROOT/'"$DevelDir"
+echo 'ln -sf ../../..'"$DevelDir " '$RPM_BUILD_ROOT/lib/modules/'"$KernelVer/build"
+
+# add for devel and headers packets -devel end
+echo ""
+echo "%clean"
+echo 'rm -rf $RPM_BUILD_ROOT'
+echo ""
+echo "%files"
+echo '%defattr (-, root, root)'
+echo "%dir /lib/modules"
+echo "/lib/modules/$KERNELRELEASE"
+echo "/lib/firmware"
+echo "/boot/*"
+echo ""
+
+# add for devel and headers packets -start
+echo "%files devel"
+echo "%defattr(-,root,root)"
+echo "%dir /usr/src/kernels"
+echo "/usr/src/kernels/$KernelVer"
+echo ""
+# add for devel and headers packets -end
+
+echo "%pre"
+echo 'mkdir -p /usr/local/kernel/etc/'
+echo 'echo "version=%{version}-%{release}" > /usr/local/kernel/etc/install.conf'
+echo ""
+echo "%post"
+
+echo "/sbin/new-kernel-pkg --package kernel --mkinitrd --depmod --install $KERNELRELEASE"
+echo ""
+echo "%preun"
+echo "rm -rf /usr/local/kernel/"
+echo ""
+echo ""
+echo "%postun"
+echo "/sbin/new-kernel-pkg  --remove $KERNELRELEASE"
+echo ""
