@@ -1629,7 +1629,7 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	if (!skb_csum_unnecessary(skb) && tcp_v4_checksum_init(skb)) 
 		goto bad_packet;
 
-	/* 由于上面的pskb_may_pull()可能改变skb的缓冲区结构，所以这里th要重新获取 */
+	/* 由于上面的pskb_may_pull()可能改变skb的缓冲区结构，所以th要重新获取 */
 	th = tcp_hdr(skb);
 	iph = ip_hdr(skb);
 	TCP_SKB_CB(skb)->seq = ntohl(th->seq);
