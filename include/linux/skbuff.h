@@ -244,13 +244,13 @@ struct ubuf_info {
 struct skb_shared_info {
 	atomic_t	dataref;
 	unsigned short	nr_frags;
-	unsigned short	gso_size;
+	unsigned short	gso_size; 	/* 每个数据段的大小 */
 	/* Warning: this field is not always filled in (UFO)! */
-	unsigned short	gso_segs;
+	unsigned short	gso_segs;	/* skb被分割成多少个数据段 */
 	unsigned short  gso_type;
 	__be32          ip6_frag_id;
 	union skb_shared_tx tx_flags;
-	struct sk_buff	*frag_list;
+	struct sk_buff	*frag_list;	/* 分割后的数据包列表 */
 	struct skb_shared_hwtstamps hwtstamps;
 	skb_frag_t	frags[MAX_SKB_FRAGS];
 	/* Intermediate layers must ensure that destructor_arg

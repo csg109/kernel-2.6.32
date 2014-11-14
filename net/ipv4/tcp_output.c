@@ -773,6 +773,11 @@ static void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 static void tcp_set_skb_tso_segs(struct sock *sk, struct sk_buff *skb,
 				 unsigned int mss_now)
 {
+	/* 有以下情况则不需要分片： 
+	 * 1. 数据的长度不超过最大长度MSS 
+	 * 2. 网卡不支持GSO 
+	 * 3. 网卡不支持重新计算校验和
+	 */
 	if (skb->len <= mss_now || !sk_can_gso(sk) ||
 	    skb->ip_summed == CHECKSUM_NONE) {
 		/* Avoid the costly divide in the normal
@@ -782,8 +787,8 @@ static void tcp_set_skb_tso_segs(struct sock *sk, struct sk_buff *skb,
 		skb_shinfo(skb)->gso_size = 0;
 		skb_shinfo(skb)->gso_type = 0;
 	} else {
-		skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(skb->len, mss_now);
-		skb_shinfo(skb)->gso_size = mss_now;
+		skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(skb->len, mss_now); /* 计算需要分成几个数据段, 向上取整 */
+		skb_shinfo(skb)->gso_size = mss_now; /* 每个数据段的大小 */
 		skb_shinfo(skb)->gso_type = sk->sk_gso_type;
 	}
 }
@@ -1161,15 +1166,16 @@ static unsigned int tcp_mss_split_point(struct sock *sk, struct sk_buff *skb,
 	window = tcp_wnd_end(tp) - TCP_SKB_CB(skb)->seq;
 	cwnd_len = mss_now * cwnd;
 
+	/* 拥塞窗口比接收窗口较小，返回拥塞窗口大小 */
 	if (likely(cwnd_len <= window && skb != tcp_write_queue_tail(sk)))
 		return cwnd_len;
 
 	needed = min(skb->len, window);
 
-	if (cwnd_len <= needed)
+	if (cwnd_len <= needed) /* 拥塞窗口小于数据包大小或者接收窗口, 返回拥塞窗口大小 */
 		return cwnd_len;
 
-	return needed - needed % mss_now;
+	return needed - needed % mss_now; /* 这里返回在接收窗口内的数据包大小，取整到MSS */
 }
 
 /* Can at least one segment of SKB be sent right now, according to the
@@ -1203,9 +1209,10 @@ static int tcp_init_tso_segs(struct sock *sk, struct sk_buff *skb,
 {
 	int tso_segs = tcp_skb_pcount(skb);
 
+	/* 如果还没有分段，或者有多个分段但是分段长度不等于当前MSS，则需处理 */
 	if (!tso_segs || (tso_segs > 1 && tcp_skb_mss(skb) != mss_now)) {
 		tcp_set_skb_tso_segs(sk, skb, mss_now);
-		tso_segs = tcp_skb_pcount(skb);
+		tso_segs = tcp_skb_pcount(skb); /* 重新获取分段数量 */
 	}
 	return tso_segs;
 }
