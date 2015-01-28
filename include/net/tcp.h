@@ -191,11 +191,7 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOLEN_TSTAMP_ALIGNED		12
 #define TCPOLEN_WSCALE_ALIGNED		4
 #define TCPOLEN_SACKPERM_ALIGNED	4
-#define TCPOLEN_SACK_BASE		2
-#define TCPOLEN_SACK_BASE_ALIGNED	4
-#define TCPOLEN_SACK_PERBLOCK		8
-#define TCPOLEN_MD5SIG_ALIGNED		20
-#define TCPOLEN_MSS_ALIGNED		4
+#define TCPONED		4
 
 /* Flags in tp->nonagle */
 #define TCP_NAGLE_OFF		1	/* Nagle's algo is disabled */
@@ -590,6 +586,7 @@ static inline u32 tcp_rto_min(struct sock *sk)
  * Rcv_nxt can be after the window if our peer push more data
  * than the offered window.
  */
+/* 返回剩余窗口的大小 */
 static inline u32 tcp_receive_window(const struct tcp_sock *tp)
 {
 	s32 win = tp->rcv_wup + tp->rcv_wnd - tp->rcv_nxt;
@@ -622,9 +619,9 @@ extern u32	__tcp_select_window(struct sock *sk);
  */
 struct tcp_skb_cb {
 	union {
-		struct inet_skb_parm	h4;
+		struct inet_skb_parm	h4; 	/* 16字节 */
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
-		struct inet6_skb_parm	h6;
+		struct inet6_skb_parm	h6;	/* 24字节 */
 #endif
 	} header;	/* For incoming frames		*/
 	__u32		seq;		/* Starting sequence number	*//* 当前tcp包的序列号 */
@@ -652,6 +649,13 @@ struct tcp_skb_cb {
 
 #define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*//* 重传的帧 */
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS)
+/* 
+ * TCPCB_SACKED_RETRANS和TCPCB_EVER_RETRANS区别:
+ *   当一个skb被重传了，它的记分牌就会添加TCPCB_RETRANS标志。
+ *   当重传的skb被sack确认或者ack累积确认时，就会清除TCPCB_SACKED_RETRANS标志，
+ *   但是这个时候TCPCB_EVER_RETRANS还保留，表示这个skb曾经被重传过。
+ *   TCPCB_EVER_RETRANS在更新RTT中发挥作用，如果skb曾经重传过，那么就不根据它来计算RTT
+ */
 
 	__u32		ack_seq;	/* Sequence number ACK'd	*//* ack的序列号 */
 };
@@ -1000,6 +1004,7 @@ extern void tcp_select_initial_window(int __space, __u32 mss,
 
 static inline int tcp_win_from_space(int space)
 {
+	/* 这里计算为3/4的space，可能是为了减去skb本身的开销，得到真正应用层数据的可用大小 */
 	return sysctl_tcp_adv_win_scale<=0 ?
 		(space>>(-sysctl_tcp_adv_win_scale)) :
 		space - (space>>sysctl_tcp_adv_win_scale);
@@ -1009,7 +1014,7 @@ static inline int tcp_win_from_space(int space)
 static inline int tcp_space(const struct sock *sk)
 {
 	return tcp_win_from_space(sk->sk_rcvbuf -
-				  atomic_read(&sk->sk_rmem_alloc));
+				  atomic_read(&sk->sk_rmem_alloc)); /* 这两个相减为剩余可分配的大小 */
 } 
 
 static inline int tcp_full_space(const struct sock *sk)

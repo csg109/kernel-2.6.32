@@ -131,19 +131,25 @@ static void tcp_cwnd_restart(struct sock *sk, struct dst_entry *dst)
 	u32 restart_cwnd = tcp_init_cwnd(tp, dst);
 	u32 cwnd = tp->snd_cwnd;
 
-	tcp_ca_event(sk, CA_EVENT_CWND_RESTART);
+	tcp_ca_event(sk, CA_EVENT_CWND_RESTART); /* 触发拥塞窗口重置事件 */
 
-	tp->snd_ssthresh = tcp_current_ssthresh(sk);
+	tp->snd_ssthresh = tcp_current_ssthresh(sk); /* 阈值保存下来，并没有重置 */
 	restart_cwnd = min(restart_cwnd, cwnd);
 
+	/* 闲置时间每超过一个RTO且cwnd比重置后的大时，cwnd减半 */
 	while ((delta -= inet_csk(sk)->icsk_rto) > 0 && cwnd > restart_cwnd)
 		cwnd >>= 1;
-	tp->snd_cwnd = max(cwnd, restart_cwnd);
+	tp->snd_cwnd = max(cwnd, restart_cwnd); /* 取其大者 */
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 	tp->snd_cwnd_used = 0;
 }
 
 /* Congestion state accounting after a packet has been sent. */
+/* tcp_event_data_sent()中，符合三个条件才重置cwnd：
+ * （1）tcp_slow_start_after_idle选项设置，这个内核默认置为1
+ * （2）tp->packets_out == 0，表示网络中没有未确认数据包
+ * （3）now - tp->lsndtime > icsk->icsk_rto，距离上次发送数据包的时间超过了RTO
+ */
 static void tcp_event_data_sent(struct tcp_sock *tp,
 				struct sk_buff *skb, struct sock *sk)
 {
@@ -152,13 +158,14 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 
 	if (sysctl_tcp_slow_start_after_idle &&
 	    (!tp->packets_out && (s32)(now - tp->lsndtime) > icsk->icsk_rto))
-		tcp_cwnd_restart(sk, __sk_dst_get(sk));
+		tcp_cwnd_restart(sk, __sk_dst_get(sk)); /* 重置cnwd  */
 
-	tp->lsndtime = now;
+	tp->lsndtime = now; /* 更新最近发包的时间 */
 
 	/* If it is a reply for ato after last received
 	 * packet, enter pingpong mode.
 	 */
+	/* 根据最近接收段的时间，确定是否进入pingpong模式*/
 	if ((u32)(now - icsk->icsk_ack.lrcvtime) < icsk->icsk_ack.ato)
 		icsk->icsk_ack.pingpong = 1;
 }
@@ -1126,6 +1133,10 @@ unsigned int tcp_current_mss(struct sock *sk)
 }
 
 /* Congestion window validation. (RFC2861) */
+/* 在发送方成功发送数据包后，会检查从发送队列发出而未确认的数据包是否用完拥塞窗口。
+ * 如果拥塞窗口被用完了，说明发送方收到网络限制；
+ * 如果拥塞窗口没被用完，且距离上次检查时间超过了RTO，说明发送方收到应用程序限制
+ */
 static void tcp_cwnd_validate(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1133,12 +1144,13 @@ static void tcp_cwnd_validate(struct sock *sk)
 	if (tp->packets_out >= tp->snd_cwnd) {
 		/* Network is feed fully. */
 		tp->snd_cwnd_used = 0;
-		tp->snd_cwnd_stamp = tcp_time_stamp;
+		tp->snd_cwnd_stamp = tcp_time_stamp; /* 更新检测时间 */
 	} else {
 		/* Network starves. */
 		if (tp->packets_out > tp->snd_cwnd_used)
-			tp->snd_cwnd_used = tp->packets_out;
+			tp->snd_cwnd_used = tp->packets_out; /* 更新已使用窗口 */
 
+		/* 如果距离上次检测的时间，即距离上次发包时间已经超过RTO */
 		if (sysctl_tcp_slow_start_after_idle &&
 		    (s32)(tcp_time_stamp - tp->snd_cwnd_stamp) >= inet_csk(sk)->icsk_rto)
 			tcp_cwnd_application_limited(sk);
@@ -1584,7 +1596,7 @@ static int tcp_mtu_probe(struct sock *sk)
  * cannot send anything now because of SWS or another problem.
  */
 /* 
- * 将发送队列上的SBK发送出去，返回值为0表示发送成功 
+ * 将发送队列上的SKB发送出去，返回值为0表示发送成功 
  * 函数执行过程如下：
  * 1、检测拥塞窗口的大小。
  * 2、检测当前报文是否完全处在发送窗口内。
@@ -2000,14 +2012,15 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	/* Do not sent more than we queued. 1/4 is reserved for possible
 	 * copying overhead: fragmentation, tunneling, mangling etc.
 	 */
+	/* 如果消耗很多的内存做其他事，那么就没有多余的来做队列的处理了 */
 	if (atomic_read(&sk->sk_wmem_alloc) >
 	    min(sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2), sk->sk_sndbuf))
 		return -EAGAIN;
 
-	if (before(TCP_SKB_CB(skb)->seq, tp->snd_una)) {
-		if (before(TCP_SKB_CB(skb)->end_seq, tp->snd_una))
+	if (before(TCP_SKB_CB(skb)->seq, tp->snd_una)) { /* 说明是有一部分数据才需要重传，形如：seq---snd_una---end_seq，前面一半已收到ACK   */
+		if (before(TCP_SKB_CB(skb)->end_seq, tp->snd_una)) /* 说明全部ACK，无需重传，BUG */
 			BUG();
-		if (tcp_trim_head(sk, skb, tp->snd_una - TCP_SKB_CB(skb)->seq))
+		if (tcp_trim_head(sk, skb, tp->snd_una - TCP_SKB_CB(skb)->seq)) /* 裁掉已经重传过的数据 */
 			return -ENOMEM;
 	}
 
@@ -2025,13 +2038,13 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	    && TCP_SKB_CB(skb)->seq != tp->snd_una)
 		return -EAGAIN;
 
-	if (skb->len > cur_mss) {
+	if (skb->len > cur_mss) { /* 大于MSS为何要先分片？不太理解 */
 		if (tcp_fragment(sk, skb, cur_mss, cur_mss))
 			return -ENOMEM; /* We'll try again later. */
 	} else {
 		int oldpcount = tcp_skb_pcount(skb);
 
-		if (unlikely(oldpcount > 1)) {
+		if (unlikely(oldpcount > 1)) { /* 说明当前MSS和SKB的分片大小不匹配，需要重新调整 */
 			tcp_init_tso_segs(sk, skb, cur_mss);
 			tcp_adjust_pcount(sk, skb, oldpcount - tcp_skb_pcount(skb));
 		}

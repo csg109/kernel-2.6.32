@@ -447,15 +447,16 @@ void tcp_initialize_rcv_mss(struct sock *sk)
  * though this reference is out of date.  A new paper
  * is pending.
  */
+/* win_dep表示是否对RTT采样进行微调，1为不进行微调，0为进行微调 */
 static void tcp_rcv_rtt_update(struct tcp_sock *tp, u32 sample, int win_dep)
 {
 	u32 new_sample = tp->rcv_rtt_est.rtt;
 	long m = sample;
 
 	if (m == 0)
-		m = 1;
+		m = 1; /* 时延最小为1ms */
 
-	if (new_sample != 0) {
+	if (new_sample != 0) { /* 不是第一次获得样本 */
 		/* If we sample in larger samples in the non-timestamp
 		 * case, we could grossly overestimate the RTT especially
 		 * with chatty applications or bulk transfer apps which
@@ -466,40 +467,47 @@ static void tcp_rcv_rtt_update(struct tcp_sock *tp, u32 sample, int win_dep)
 		 * else with timestamps disabled convergence takes too
 		 * long.
 		 */
-		if (!win_dep) {
+		if (!win_dep) { /* 对RTT采样进行微调，新的RTT样本只占最终RTT的1/8 */
 			m -= (new_sample >> 3);
 			new_sample += m;
-		} else if (m < new_sample)
+		} else if (m < new_sample) /* 不对RTT采样进行微调，直接取最小值(这里有BUG,应该跟m<<3比较)，原因可见上面那段注释 */
 			new_sample = m << 3;
-	} else {
+	} else { /*  第一次获得样本 */
 		/* No previous measure. */
 		new_sample = m << 3;
 	}
 
 	if (tp->rcv_rtt_est.rtt != new_sample)
-		tp->rcv_rtt_est.rtt = new_sample;
+		tp->rcv_rtt_est.rtt = new_sample; /* 更新RTT */
 }
 
 static inline void tcp_rcv_rtt_measure(struct tcp_sock *tp)
 {
+	/*  第一次接收到数据时，需要对相关变量初始化 */
 	if (tp->rcv_rtt_est.time == 0)
 		goto new_measure;
+
+	/* 收到指定的序列号后，才能获取一个RTT测量样本 */
 	if (before(tp->rcv_nxt, tp->rcv_rtt_est.seq))
 		return;
+	
+	/*  RTT的样本：jiffies - tp->rcv_rtt_est.time */
 	tcp_rcv_rtt_update(tp, jiffies - tp->rcv_rtt_est.time, 1);
 
 new_measure:
-	tp->rcv_rtt_est.seq = tp->rcv_nxt + tp->rcv_wnd;
-	tp->rcv_rtt_est.time = tcp_time_stamp;
+	tp->rcv_rtt_est.seq = tp->rcv_nxt + tp->rcv_wnd; /* 收到此序列号的ack时，一个RTT样本的计时结束 */
+	tp->rcv_rtt_est.time = tcp_time_stamp;	/* 一个RTT样本开始计时 */
 }
 
 static inline void tcp_rcv_rtt_measure_ts(struct sock *sk,
 					  const struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	/* 启用了Timestamps选项，并且流量稳定 */
 	if (tp->rx_opt.rcv_tsecr &&
 	    (TCP_SKB_CB(skb)->end_seq -
 	     TCP_SKB_CB(skb)->seq >= inet_csk(sk)->icsk_ack.rcv_mss))
+		/* RTT = 当前时间 - 回显时间 */
 		tcp_rcv_rtt_update(tp, tcp_time_stamp - tp->rx_opt.rcv_tsecr, 0);
 }
 
@@ -507,28 +515,38 @@ static inline void tcp_rcv_rtt_measure_ts(struct sock *sk,
  * This function should be called every time data is copied to user space.
  * It calculates the appropriate TCP receive buffer space.
  */
+/* 当数据从TCP接收缓存复制到用户空间之后，
+ * 会调用tcp_rcv_space_adjust()来调整TCP接收缓存和接收窗口上限的大小 
+ */
 void tcp_rcv_space_adjust(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int time;
 	int space;
 
-	if (tp->rcvq_space.time == 0)
+	if (tp->rcvq_space.time == 0) /* 第一次调整 */
 		goto new_measure;
 
-	time = tcp_time_stamp - tp->rcvq_space.time;
+	time = tcp_time_stamp - tp->rcvq_space.time; /* 计算上次调整到现在的时间 */
+
+	/* 调整至少每隔一个RTT才进行一次，RTT的作用在这里 */
 	if (time < (tp->rcv_rtt_est.rtt >> 3) || tp->rcv_rtt_est.rtt == 0)
 		return;
 
+	/* 一个RTT内接收方应用程序接收并复制到用户空间的数据量的2倍 
+	 * 2倍的原因是发送方慢启动时每个RTT窗口增加1倍，
+	 * 这样就能保证接收窗口上限的增长速度不小于拥塞窗口的增长速度，避免接收窗口成为传输瓶颈
+	 */
 	space = 2 * (tp->copied_seq - tp->rcvq_space.seq);
-
 	space = max(tp->rcvq_space.space, space);
 
+	/* 如果这次的space比上次的大 */
 	if (tp->rcvq_space.space != space) {
 		int rcvmem;
 
-		tp->rcvq_space.space = space;
+		tp->rcvq_space.space = space; /* 更新rcvq_space.space */
 
+		/* 启用自动调节接收缓冲区大小，并且接收缓冲区没有上锁 */
 		if (sysctl_tcp_moderate_rcvbuf &&
 		    !(sk->sk_userlocks & SOCK_RCVBUF_LOCK)) {
 			int new_clamp = space;
@@ -537,26 +555,31 @@ void tcp_rcv_space_adjust(struct sock *sk)
 			 * take into account packet headers and sk_buff
 			 * structure overhead.
 			 */
-			space /= tp->advmss;
+			space /= tp->advmss; /* 接收缓冲区可以缓存数据包的个数 */
 			if (!space)
 				space = 1;
-			rcvmem = SKB_TRUESIZE(tp->advmss + MAX_TCP_HEADER);
+
+			/* 一个数据包耗费的总内存包括： 
+			 * 应用层数据：tp->advmss， 协议头：MAX_TCP_HEADER，sk_buff结构，skb_shared_info结构。 
+			 */
+			rcvmem = SKB_TRUESIZE(tp->advmss + MAX_TCP_HEADER); /* rcvmem为每个数据包占用的空间 */
+			/* 对rcvmem进行微调 */
 			while (tcp_win_from_space(rcvmem) < tp->advmss)
 				rcvmem += 128;
-			space *= rcvmem;
-			space = min(space, sysctl_tcp_rmem[2]);
+			space *= rcvmem; /* 每个数据包占用的*包个数 */
+			space = min(space, sysctl_tcp_rmem[2]); /* 不能超过允许的最大接收缓冲区大小 */
 			if (space > sk->sk_rcvbuf) {
-				sk->sk_rcvbuf = space;
+				sk->sk_rcvbuf = space; /* 调整接收缓冲区的大小 */
 
 				/* Make the window clamp follow along.  */
-				tp->window_clamp = new_clamp;
+				tp->window_clamp = new_clamp; /* 调整接收窗口的上限 */
 			}
 		}
 	}
 
 new_measure:
-	tp->rcvq_space.seq = tp->copied_seq;
-	tp->rcvq_space.time = tcp_time_stamp;
+	tp->rcvq_space.seq = tp->copied_seq; /* 此序号之前的数据已复制到用户空间，下次复制将从这里开始 */
+	tp->rcvq_space.time = tcp_time_stamp; /* 记录这次调整的时间 */
 }
 
 /* There is something which you must keep in mind when you analyze the
@@ -1304,7 +1327,7 @@ static int tcp_match_skb_to_sack(struct sock *sk, struct sk_buff *skb,
 		/* Round if necessary so that SACKs cover only full MSSes
 		 * and/or the remaining small portion (if present)
 		 */
-		if (pkt_len > mss) {
+		if (pkt_len > mss) { /* 将pkt_len对齐到mss的整数倍 */
 			unsigned int new_len = (pkt_len / mss) * mss;
 			if (!in_sack && new_len < pkt_len) {
 				new_len += mss;
@@ -1530,7 +1553,7 @@ static struct sk_buff *tcp_shift_skb_data(struct sock *sk, struct sk_buff *skb,
 	in_sack = !after(start_seq, TCP_SKB_CB(skb)->seq) &&
 		  !before(end_seq, TCP_SKB_CB(skb)->end_seq);
 
-	if (in_sack) {
+	if (in_sack) { /* skb完全在sack段中 */
 		len = skb->len;
 		pcount = tcp_skb_pcount(skb);
 		mss = tcp_skb_seglen(skb);
@@ -1550,7 +1573,7 @@ static struct sk_buff *tcp_shift_skb_data(struct sock *sk, struct sk_buff *skb,
 		if (tcp_skb_pcount(skb) <= 1)
 			goto noop;
 
-		in_sack = !after(start_seq, TCP_SKB_CB(skb)->seq);
+		in_sack = !after(start_seq, TCP_SKB_CB(skb)->seq); /* skb的前面部分在sack段中 */
 		if (!in_sack) {
 			/* TODO: head merge to next could be attempted here
 			 * if (!after(TCP_SKB_CB(skb)->end_seq, end_seq)),
@@ -1592,11 +1615,13 @@ static struct sk_buff *tcp_shift_skb_data(struct sock *sk, struct sk_buff *skb,
 		}
 	}
 
-	if (!skb_shift(prev, skb, len))
+	if (!skb_shift(prev, skb, len)) /* 把skb的len数据长度移到prev中 */
 		goto fallback;
-	if (!tcp_shifted_skb(sk, skb, state, pcount, len, mss, dup_sack))
+	/* 数据转移后的一些处理, 如果skb数据被完全转以后则释放skb */
+	if (!tcp_shifted_skb(sk, skb, state, pcount, len, mss, dup_sack)) 
 		goto out;
 
+	/* 下面还会尝试合并下一个skb */
 	/* Hole filled allows collapsing with the next as well, this is very
 	 * useful when hole on every nth skb pattern happens
 	 */
@@ -1677,7 +1702,7 @@ static struct sk_buff *tcp_sacktag_walk(struct sk_buff *skb, struct sock *sk,
 				}
 
 				in_sack = 0;
-			} else { /* 否则我们单独处理这个skb */
+			} else { /* 否则我们单独处理这个skb, 若需要，这里进行skb的拆分 */
 				in_sack = tcp_match_skb_to_sack(sk, skb,
 								start_seq,
 								end_seq);
@@ -5056,14 +5081,18 @@ void tcp_cwnd_application_limited(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	/* 只有处于Open态，应用程序没受到sndbuf限制时，才进行ssthresh和cwnd的重置 */
 	if (inet_csk(sk)->icsk_ca_state == TCP_CA_Open &&
 	    sk->sk_socket && !test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
 		/* Limited by application or receiver window. */
 		u32 init_win = tcp_init_cwnd(tp, __sk_dst_get(sk));
 		u32 win_used = max(tp->snd_cwnd_used, init_win);
-		if (win_used < tp->snd_cwnd) {
+		if (win_used < tp->snd_cwnd) { /* 没用完拥塞窗口 */
+			/* 并没有减小ssthresh，反而增大，保留了过去的信息，
+			 * 以便之后有数据发送时能快速增大到接近此时的窗口
+			 */
 			tp->snd_ssthresh = tcp_current_ssthresh(sk);
-			tp->snd_cwnd = (tp->snd_cwnd + win_used) >> 1;
+			tp->snd_cwnd = (tp->snd_cwnd + win_used) >> 1; /* 减小了snd_cwnd */
 		}
 		tp->snd_cwnd_used = 0;
 	}

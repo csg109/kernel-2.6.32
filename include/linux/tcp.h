@@ -275,7 +275,7 @@ struct tcp_sock {
  *	See RFC793 and RFC1122. The RFC writes these in capitals.
  */
  	u32	rcv_nxt;	/* What we want to receive next 	*//* 期待接收的下一个数据字节的序列号 */
-	u32	copied_seq;	/* Head of yet unread data		*//* 还没有被读取的数据的序列号 */
+	u32	copied_seq;	/* Head of yet unread data		*//* 还没有被读取的数据的序列号, 应用程序下次从这里复制数据 */
 	u32	rcv_wup;	/* rcv_nxt on last window update sent	*//* 当最后一次窗口update被发送之前的rcv_nxt */
  	u32	snd_nxt;	/* Next sequence we send		*//* 下一个要发送的序列号 */
 
@@ -311,11 +311,11 @@ struct tcp_sock {
 	/* 发送方当前有效MSS */
 	u32	mss_cache;	/* Cached effective mss, not including SACKS */
 
-	u32	window_clamp;	/* Maximal window to advertise		*/
+	u32	window_clamp;	/* Maximal window to advertise		*//* 通告窗口的上限 */
 	u32	rcv_ssthresh;	/* Current window clamp			*/
 
 	u32	frto_highmark;	/* snd_nxt when RTO occurred */
-	u16	advmss;		/* Advertised MSS			*/
+	u16	advmss;		/* Advertised MSS			*/ /* 接收端通告的MSS */
 	u8	frto_counter;	/* Number of new acks after RTO */
 	u8	nonagle;	/* Disable Nagle algorithm?             */
 
@@ -358,7 +358,7 @@ struct tcp_sock {
 	 */
 	u32	snd_cwnd_cnt;	/* Linear increase counter		*/
 	u32	snd_cwnd_clamp; /* Do not allow snd_cwnd to grow above this *//* 允许的拥塞窗口最大值 */
-	u32	snd_cwnd_used;
+	u32	snd_cwnd_used;	/* 每次发包后记录packets_out，用来检测cwnd有没有被完全使用 */
 	u32	snd_cwnd_stamp; /* 每次改变拥塞窗口记录时间戳 */
 
  	u32	rcv_wnd;	/* Current receiver window		*//* 接收窗口长度 */
@@ -426,17 +426,17 @@ struct tcp_sock {
 
 /* Receiver side RTT estimation */
 	struct {
-		u32	rtt;
-		u32	seq;
-		u32	time;
-	} rcv_rtt_est;
+		u32	rtt;	/* 接收端估计的RTT */
+		u32	seq;	/* 用于记录一个RTT结尾的序列号, 接收rcv_wnd为一个RTT */
+		u32	time; 	/* 记录时间戳，用于计算RTT */
+	} rcv_rtt_est; /* 用于接收端的RTT测量 */
 
 /* Receiver queue space */
 	struct {
-		int	space;
-		u32	seq;
-		u32	time;
-	} rcvq_space;
+		int	space; 	/* 表示当前接收缓存的大小（只包括应用层数据，单位为字节） */
+		u32	seq;	/* 记录每次调整时的copied_seq */
+		u32	time;	/* 记录时间戳 */
+	} rcvq_space; /* 用于调整接收缓冲区和接收窗口 */
 
 /* TCP-specific MTU probe information. */
 	struct {

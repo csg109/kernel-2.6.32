@@ -232,7 +232,9 @@ struct sock {
 				sk_protocol  : 8,
 				sk_type      : 16;
 	kmemcheck_bitfield_end(flags);
-	int			sk_rcvbuf; 	/* TCP接收缓冲区的大小 */
+	int			sk_rcvbuf; 	/* TCP接收缓冲区的大小
+						 * 包括应用层数据、TCP协议头、sk_buff和skb_shared_info结构，tcp_adv_win_scale微调，单位为字节
+						 */
 	socket_lock_t		sk_lock;
 	/*
 	 * The backlog queue is special, it is always used with
@@ -249,7 +251,7 @@ struct sock {
 	struct xfrm_policy	*sk_policy[2];
 #endif
 	rwlock_t		sk_dst_lock;
-	atomic_t		sk_rmem_alloc;
+	atomic_t		sk_rmem_alloc;	/* 已分配的接收缓存的大小 */
 	atomic_t		sk_wmem_alloc;
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;	/* TCP发送缓冲区大小 */

@@ -468,8 +468,8 @@ struct sk_buff {
 	sk_buff_data_t		network_header; 	/* 网络层的头 */
 	sk_buff_data_t		mac_header; 		/* 链路层的头 */
 	/* These elements must be at the end, see alloc_skb() for details.  */
-	sk_buff_data_t		tail;
-	sk_buff_data_t		end;
+	sk_buff_data_t		tail; 		/* 距离head的长度 */
+	sk_buff_data_t		end;		/* 距离head的长度 */
 	unsigned char		*head,
 				*data;
 	unsigned int		truesize; 	/* 整个skb的大小，包括skb本身，以及数据 */
