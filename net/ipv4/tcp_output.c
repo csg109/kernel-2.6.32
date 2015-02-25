@@ -1732,7 +1732,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	/* 如果本次没有数据发送，则根据已发送但未确认的报文数packets_out和sk_send_head返回，
 	 * packets_out不为零或sk_send_head为空都视为有数据发出，因此返回成功 
 	 */
-	return !tp->packets_out && tcp_send_head(sk);
+	return !tp->packets_out && tcp_send_head(sk); /* 如果没有发送的数据并且还有数据待发送，则返回1去激活0窗口定时器 */
 }
 
 /* Push out any pending frames which were held back due to
@@ -1755,7 +1755,7 @@ void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 		return;
 
 	if (tcp_write_xmit(sk, cur_mss, nonagle, 0, GFP_ATOMIC))
-		tcp_check_probe_timer(sk);
+		tcp_check_probe_timer(sk); /* 如果tcp_write_xmit()没发送任何数据并还有数据待发送，则激活0窗口定时器 */
 }
 
 /* Send _single_ skb sitting at the send head. This function requires
@@ -2658,6 +2658,11 @@ static int tcp_xmit_probe_skb(struct sock *sk, int urgent)
 }
 
 /* Initiate keepalive or window probe from timer. */
+/* 发送0窗口持续探测段
+ * 返回值：0表示发送成功；
+ * 	   小于0表示发送失败; 
+ * 	   大于0表示由于本地拥塞导致发送失败
+ * */
 int tcp_write_wakeup(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2666,6 +2671,9 @@ int tcp_write_wakeup(struct sock *sk)
 	if (sk->sk_state == TCP_CLOSE)
 		return -1;
 
+	/* 如果发送队列有待发送数据，并且待发送数据有部分在接收窗口内，
+	 * 则可以直接利用该待发送数据发送探测
+	 */
 	if ((skb = tcp_send_head(sk)) != NULL &&
 	    before(TCP_SKB_CB(skb)->seq, tcp_wnd_end(tp))) {
 		int err;
@@ -2679,6 +2687,7 @@ int tcp_write_wakeup(struct sock *sk)
 		 * but the window size is != 0
 		 * must have been a result SWS avoidance ( sender )
 		 */
+		/* 确保只发出一个段且不超过MSS */
 		if (seg_size < TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq ||
 		    skb->len > mss) {
 			seg_size = min(seg_size, mss);
@@ -2694,7 +2703,9 @@ int tcp_write_wakeup(struct sock *sk)
 		if (!err)
 			tcp_event_new_data_sent(sk, skb);
 		return err;
-	} else {
+	} else { /* 如果发送队列为空或超出接收窗口，则构造并发送一个已确认、长度为0的段给对端 
+		  * 如果处理紧急模式，则多发送一个序号为snd.una的段给对端
+		  */
 		if (between(tp->snd_up, tp->snd_una + 1, tp->snd_una + 0xFFFF))
 			tcp_xmit_probe_skb(sk, 1);
 		return tcp_xmit_probe_skb(sk, 0);
@@ -2710,23 +2721,23 @@ void tcp_send_probe0(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int err;
 
-	err = tcp_write_wakeup(sk);
+	err = tcp_write_wakeup(sk); /* 发送0窗口持续探测段 */
 
-	if (tp->packets_out || !tcp_send_head(sk)) {
+	if (tp->packets_out || !tcp_send_head(sk)) { /* 如果网络上有数据或没数据待发送，则清零 */
 		/* Cancel probe timer, if it is not required. */
 		icsk->icsk_probes_out = 0;
 		icsk->icsk_backoff = 0;
 		return;
 	}
 
-	if (err <= 0) {
+	if (err <= 0) { /* 发送成功(0)，或并非由本地拥塞引起的发送失败(<0) */
 		if (icsk->icsk_backoff < sysctl_tcp_retries2)
-			icsk->icsk_backoff++;
-		icsk->icsk_probes_out++;
+			icsk->icsk_backoff++; /* 增加指数退避 */
+		icsk->icsk_probes_out++; /* 增加探测次数 */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  min(icsk->icsk_rto << icsk->icsk_backoff, TCP_RTO_MAX),
-					  TCP_RTO_MAX);
-	} else {
+					  TCP_RTO_MAX); /* 再次激活0窗口定时器 */
+	} else { /* 如果由于本地拥塞导致的发送失败 */
 		/* If packet was not sent due to local congestion,
 		 * do not backoff and do not remember icsk_probes_out.
 		 * Let local senders to fight for local resources.
@@ -2737,7 +2748,7 @@ void tcp_send_probe0(struct sock *sk)
 			icsk->icsk_probes_out = 1;
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  min(icsk->icsk_rto << icsk->icsk_backoff,
-					      TCP_RESOURCE_PROBE_INTERVAL),
+					      TCP_RESOURCE_PROBE_INTERVAL), /* 缩短时间 */
 					  TCP_RTO_MAX);
 	}
 }

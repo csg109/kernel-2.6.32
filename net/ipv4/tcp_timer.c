@@ -235,13 +235,14 @@ out_unlock:
 	sock_put(sk);
 }
 
+/* 0窗口定时器处理函数 */
 static void tcp_probe_timer(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	int max_probes;
 
-	if (tp->packets_out || !tcp_send_head(sk)) {
+	if (tp->packets_out || !tcp_send_head(sk)) { /* 有数据包在网络上就不用探测了 */
 		icsk->icsk_probes_out = 0;
 		return;
 	}
@@ -263,20 +264,21 @@ static void tcp_probe_timer(struct sock *sk)
 	 */
 	max_probes = sysctl_tcp_retries2;
 
-	if (sock_flag(sk, SOCK_DEAD)) {
+	if (sock_flag(sk, SOCK_DEAD)) { /* 处理连接已经断开，套接口即将关闭的情况 */
 		const int alive = ((icsk->icsk_rto << icsk->icsk_backoff) < TCP_RTO_MAX);
 
 		max_probes = tcp_orphan_retries(sk, alive);
 
+		/* 释放资源，如果该套接口在释放过程中被关闭，则无需再发送探测了 */
 		if (tcp_out_of_resources(sk, alive || icsk->icsk_probes_out <= max_probes))
 			return;
 	}
 
-	if (icsk->icsk_probes_out > max_probes) {
+	if (icsk->icsk_probes_out > max_probes) { /* 连续探测超过15次且没收到ack则断开连接, icsk_probes_out会在tcp_ack中清零 */
 		tcp_write_err(sk);
 	} else {
 		/* Only send another probe if we didn't close things up. */
-		tcp_send_probe0(sk);
+		tcp_send_probe0(sk); /* 发送探测 */
 	}
 }
 

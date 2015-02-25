@@ -94,7 +94,7 @@ struct inet_connection_sock {
 	unsigned long		  icsk_timeout;			/* 数据包超时时间 */
  	struct timer_list	  icsk_retransmit_timer;	/* 重传定时器 */
  	struct timer_list	  icsk_delack_timer;		/* delay ack定时器 */
-	__u32			  icsk_rto;			/* 超时时间 */
+	__u32			  icsk_rto;			/* RTO超时时间 */
 	__u32			  icsk_pmtu_cookie;
 	const struct tcp_congestion_ops *icsk_ca_ops;		/* 拥塞控制算法 */
 	const struct inet_connection_sock_af_ops *icsk_af_ops;  /* 为ipv4_specific */
@@ -102,9 +102,9 @@ struct inet_connection_sock {
 	__u8			  icsk_ca_state;	 	/* 拥塞状态，用枚举tcp_ca_state定义 */
 	__u8			  icsk_retransmits;
 	__u8			  icsk_pending;			/* 等待的定时器事件 */
-	__u8			  icsk_backoff;
+	__u8			  icsk_backoff;			/* 指数退避 */
 	__u8			  icsk_syn_retries;
-	__u8			  icsk_probes_out;
+	__u8			  icsk_probes_out;		/* 探测次数 */
 	__u16			  icsk_ext_hdr_len;
 	struct {
 		__u8		  pending;	 /* ACK is pending			   */

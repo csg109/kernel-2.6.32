@@ -3617,13 +3617,13 @@ static void tcp_ack_probe(struct sock *sk)
 
 	/* Was it a usable window open? */
 
-	if (!after(TCP_SKB_CB(tcp_send_head(sk))->end_seq, tcp_wnd_end(tp))) {
-		icsk->icsk_backoff = 0;
-		inet_csk_clear_xmit_timer(sk, ICSK_TIME_PROBE0);
+	if (!after(TCP_SKB_CB(tcp_send_head(sk))->end_seq, tcp_wnd_end(tp))) { /* 窗口足够了, 可以继续发送数据 */
+		icsk->icsk_backoff = 0;	/* 清除退避 */
+		inet_csk_clear_xmit_timer(sk, ICSK_TIME_PROBE0); /* 清除0窗口定时器 */
 		/* Socket must be waked up by subsequent tcp_data_snd_check().
 		 * This function is not for random using!
 		 */
-	} else {
+	} else { /* 激活0窗口定时器 */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  min(icsk->icsk_rto << icsk->icsk_backoff, TCP_RTO_MAX),
 					  TCP_RTO_MAX);
@@ -3931,7 +3931,7 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 	 * log. Something worked...
 	 */
 	sk->sk_err_soft = 0;
-	icsk->icsk_probes_out = 0;
+	icsk->icsk_probes_out = 0; /* 收到ack后清除0窗口探测计数 */
 	tp->rcv_tstamp = tcp_time_stamp;
 
 	/* 如果发送并且没有ack的数据段的值为0,则说明这个有可能是0窗口探测的回复，因此进入no_queue的处理 */
@@ -3992,7 +3992,7 @@ no_queue:
 	 * being used to time the probes, and is probably far higher than
 	 * it needs to be for normal retransmission.
 	 */
-	/* 这里判断发送缓冲区是否为空，如果不为空，则进入判断需要重启keepalive定时器还是关闭定时器 */
+	/* 这里判断发送缓冲区是否为空，如果不为空，则进入判断需要重启0窗口定时器还是关闭定时器 */
 	if (tcp_send_head(sk))
 		tcp_ack_probe(sk);
 	return 1;

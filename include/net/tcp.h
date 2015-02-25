@@ -878,7 +878,7 @@ static inline void tcp_check_probe_timer(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 
-	if (!tp->packets_out && !icsk->icsk_pending)
+	if (!tp->packets_out && !icsk->icsk_pending) /* 第一次激活0窗口定时器，时间为RTO */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
 					  icsk->icsk_rto, TCP_RTO_MAX);
 }

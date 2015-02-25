@@ -252,7 +252,7 @@ struct sock {
 #endif
 	rwlock_t		sk_dst_lock;
 	atomic_t		sk_rmem_alloc;	/* 已分配的接收缓存的大小 */
-	atomic_t		sk_wmem_alloc;
+	atomic_t		sk_wmem_alloc;	/* 发送缓存实际占用大小，包括发送过程中skb copy的大小？ */
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;	/* TCP发送缓冲区大小 */
 	struct sk_buff_head	sk_receive_queue;
@@ -260,7 +260,7 @@ struct sock {
 #ifdef CONFIG_NET_DMA
 	struct sk_buff_head	sk_async_wait_queue;
 #endif
-	int			sk_wmem_queued;
+	int			sk_wmem_queued; /* 发送缓冲区已使用的大小 */
 	int			sk_forward_alloc;
 	gfp_t			sk_allocation;
 	int			sk_route_caps;
