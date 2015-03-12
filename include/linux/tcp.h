@@ -362,7 +362,7 @@ struct tcp_sock {
 	u32	snd_cwnd_stamp; /* 每次改变拥塞窗口记录时间戳 */
 
  	u32	rcv_wnd;	/* Current receiver window		*//* 接收窗口长度 */
-	u32	write_seq;	/* Tail(+1) of data held in tcp send buffer */
+	u32	write_seq;	/* Tail(+1) of data held in tcp send buffer *//* 发送缓存的尾部seq, 即应用层提交给内核的尾部seq */
 	u32	pushed_seq;	/* Last pushed seq, required to talk to windows */
 	u32	lost_out;	/* Lost packets			*//* 丢失包的数目 */
 	/* 启动SACK时，标识已接收到段的数量

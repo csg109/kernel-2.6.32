@@ -1314,7 +1314,7 @@ void sock_wfree(struct sk_buff *skb)
 		 * Keep a reference on sk_wmem_alloc, this will be released
 		 * after sk_write_space() call
 		 */
-		atomic_sub(len - 1, &sk->sk_wmem_alloc);
+		atomic_sub(len - 1, &sk->sk_wmem_alloc); /* 更新sk_wmem_alloc变量，即减去该skb的大小 */
 		sk->sk_write_space(sk);
 		len = 1;
 	}
@@ -1641,34 +1641,50 @@ EXPORT_SYMBOL(sk_wait_data);
 int __sk_mem_schedule(struct sock *sk, int size, int kind)
 {
 	struct proto *prot = sk->sk_prot;
-	int amt = sk_mem_pages(size);
+	int amt = sk_mem_pages(size); /* 得到size占用几个内存页 */
 	int allocated;
 
-	sk->sk_forward_alloc += amt * SK_MEM_QUANTUM;
+	sk->sk_forward_alloc += amt * SK_MEM_QUANTUM; /* 更新sk_forward_alloc，可以看到这个值是页的大小的倍数 */
+
+	/* amt+memory_allocated也就是当前的总内存使用量加上将要分配的内存，
+	 * 也就是现在的tcp协议栈的总内存使用量。(可以看到是以页为单位的) 
+	 */
 	allocated = atomic_add_return(amt, prot->memory_allocated);
 
+	/* 
+	 * 接下来开始判断，将会落入哪一个区域。
+	 * sysctl_mem也就是sysctl_tcp_mem 
+	 */
+	
+
 	/* Under limit. */
+	/* 先判断是否小于等于内存最小使用限额 */
 	if (allocated <= prot->sysctl_mem[0]) {
 		if (prot->memory_pressure && *prot->memory_pressure)
-			*prot->memory_pressure = 0;
+			*prot->memory_pressure = 0; /* 取消memory_pressure，然后返回 */
 		return 1;
 	}
 
 	/* Under pressure. */
+	/* 大于sysctl_mem[1]说明，已经进入pressure，需要调用tcp_enter_memory_pressure来设置标志 */
 	if (allocated > prot->sysctl_mem[1])
 		if (prot->enter_memory_pressure)
 			prot->enter_memory_pressure(sk);
 
 	/* Over hard limit. */
+	/* 如果超过的hard limit。则进入另外的处理 */
 	if (allocated > prot->sysctl_mem[2])
 		goto suppress_allocation;
 
 	/* guarantee minimum buffer size under pressure */
+	/* 判断类型，这里只有两种类型，读和写。
+	 * 总的内存大小判断完，这里开始判断单独的sock的读写内存 */
 	if (kind == SK_MEM_RECV) {
 		if (atomic_read(&sk->sk_rmem_alloc) < prot->sysctl_rmem[0])
 			return 1;
 	} else { /* SK_MEM_SEND */
-		if (sk->sk_type == SOCK_STREAM) {
+		if (sk->sk_type == SOCK_STREAM) { /* 表示TCP */
+			/* 写队列的大小只有当对端数据确认后才会更新，因此我们要用sk_wmem_queued来判断 */
 			if (sk->sk_wmem_queued < prot->sysctl_wmem[0])
 				return 1;
 		} else if (atomic_read(&sk->sk_wmem_alloc) <
@@ -1676,33 +1692,41 @@ int __sk_mem_schedule(struct sock *sk, int size, int kind)
 				return 1;
 	}
 
+	/* 到达这里说明总的内存大小在sysctl_mem[0]和sysctl_mem[2]之间，因此再次判断memory_pressure   */
 	if (prot->memory_pressure) {
 		int alloc;
 
-		if (!*prot->memory_pressure)
+		if (!*prot->memory_pressure) /* 如果没有在memory_pressure区域，也就是sysctl_mem[0]和sysctl_mem[1]之间,则我们直接返回1 */
 			return 1;
-		alloc = percpu_counter_read_positive(prot->sockets_allocated);
+		alloc = percpu_counter_read_positive(prot->sockets_allocated); /* 计算整个系统分配的socket的多少 */
+		/* 这里假设其余的每个sock所占用的buf都和当前的sock一样大的时候，
+		 * 如果他们的总和小于sysctl_mem[2],也就是hard limit。
+		 * 那么我们也认为这次内存请求是成功的 */
 		if (prot->sysctl_mem[2] > alloc *
 		    sk_mem_pages(sk->sk_wmem_queued +
 				 atomic_read(&sk->sk_rmem_alloc) +
-				 sk->sk_forward_alloc))
+				 sk->sk_forward_alloc)) /* 当前连接的缓存 = 发送队列 + 接收缓存 + 预分配 */
 			return 1;
 	}
 
 suppress_allocation:
+	/* 到达这里说明超过了hard limit 或者 处于presure区域但该条连接占用的缓存过大 */
 
-	if (kind == SK_MEM_SEND && sk->sk_type == SOCK_STREAM) {
-		sk_stream_moderate_sndbuf(sk);
+	if (kind == SK_MEM_SEND && sk->sk_type == SOCK_STREAM) { /* 为TCP的发送 */
+		sk_stream_moderate_sndbuf(sk); /* 调整sk_sndbuf(减小) */
 
 		/* Fail only if socket is _under_ its sndbuf.
 		 * In this case we cannot block, so that we have to fail.
 		 */
+		/* 比较和sk_sndbuf的大小，如果大于的话，
+		 * 就说明下次再次要分配的时候会在tcp_sendmsg()的sk_stream_memory_free()阻塞住，因此这次我们返回1 */
 		if (sk->sk_wmem_queued + size >= sk->sk_sndbuf)
 			return 1;
 	}
 
 	trace_sock_exceed_buf_limit(sk, prot, allocated);
 
+	/* 到达这里说明，请求内存是不被接受的，因此undo所有的操作。然后返回0 */
 	/* Alas. Undo changes. */
 	sk->sk_forward_alloc -= amt * SK_MEM_QUANTUM;
 	atomic_sub(amt, prot->memory_allocated);

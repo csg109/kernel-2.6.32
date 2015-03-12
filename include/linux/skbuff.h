@@ -417,7 +417,7 @@ struct sk_buff {
 	__be16			protocol:16;
 	kmemcheck_bitfield_end(flags1);
 
-	void			(*destructor)(struct sk_buff *skb);
+	void			(*destructor)(struct sk_buff *skb);  /* 即sock_wfree() */
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	struct nf_conntrack	*nfct;
 	struct sk_buff		*nfct_reasm;

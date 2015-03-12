@@ -228,12 +228,12 @@ struct sock {
 	kmemcheck_bitfield_begin(flags);
 	unsigned int		sk_shutdown  : 2,
 				sk_no_check  : 2,
-				sk_userlocks : 4,	/* TCP接收缓冲区的锁标志 */
+				sk_userlocks : 4,	/* TCP缓冲区的锁标志 */
 				sk_protocol  : 8,
 				sk_type      : 16;
 	kmemcheck_bitfield_end(flags);
-	int			sk_rcvbuf; 	/* TCP接收缓冲区的大小
-						 * 包括应用层数据、TCP协议头、sk_buff和skb_shared_info结构，tcp_adv_win_scale微调，单位为字节
+	int			sk_rcvbuf; 	/* TCP接收缓冲区的大小 (包括skb结构本身)
+						 * 即包括应用层数据、TCP协议头、sk_buff和skb_shared_info结构，tcp_adv_win_scale微调，单位为字节
 						 */
 	socket_lock_t		sk_lock;
 	/*
@@ -252,16 +252,16 @@ struct sock {
 #endif
 	rwlock_t		sk_dst_lock;
 	atomic_t		sk_rmem_alloc;	/* 已分配的接收缓存的大小 */
-	atomic_t		sk_wmem_alloc;	/* 发送缓存实际占用大小，包括发送过程中skb copy的大小？ */
+	atomic_t		sk_wmem_alloc;	/* 发送缓存中进入ip层的数据包的大小, 也就是在发送过程中的大小 */
 	atomic_t		sk_omem_alloc;
-	int			sk_sndbuf;	/* TCP发送缓冲区大小 */
+	int			sk_sndbuf;	/* TCP发送缓冲区大小, 即当前发送缓存的最大限制 */
 	struct sk_buff_head	sk_receive_queue;
-	struct sk_buff_head	sk_write_queue;	/* 保存着发送且未确认的数据段 */
+	struct sk_buff_head	sk_write_queue;	/* 发送队列，保存着从una开始的所有skb */
 #ifdef CONFIG_NET_DMA
 	struct sk_buff_head	sk_async_wait_queue;
 #endif
-	int			sk_wmem_queued; /* 发送缓冲区已使用的大小 */
-	int			sk_forward_alloc;
+	int			sk_wmem_queued; /* 发送缓冲区已使用的大小,(包括skb结构本身) */
+	int			sk_forward_alloc; /* 预分配缓存的大小, 包括发送和接收的 */
 	gfp_t			sk_allocation;
 	int			sk_route_caps;
 	int			sk_gso_type;
@@ -288,7 +288,7 @@ struct sock {
 	struct socket		*sk_socket;
 	void			*sk_user_data;
 	struct page		*sk_sndmsg_page;
-	struct sk_buff		*sk_send_head;	/* 待发送的数据包 */
+	struct sk_buff		*sk_send_head;	/* 待发送的数据包, 指向sk_write_queue中未发送的第一个数据包 */
 	__u32			sk_sndmsg_off;
 	int			sk_write_pending;
 #ifdef CONFIG_SECURITY
@@ -614,6 +614,7 @@ static inline int sk_stream_min_wspace(struct sock *sk)
 	return sk->sk_wmem_queued >> 1;
 }
 
+/* 返回发送缓存剩余的大小 */
 static inline int sk_stream_wspace(struct sock *sk)
 {
 	return sk->sk_sndbuf - sk->sk_wmem_queued;
@@ -621,6 +622,7 @@ static inline int sk_stream_wspace(struct sock *sk)
 
 extern void sk_stream_write_space(struct sock *sk);
 
+/* 判断发送缓存是否还有空间可供分配 */
 static inline int sk_stream_memory_free(struct sock *sk)
 {
 	return sk->sk_wmem_queued < sk->sk_sndbuf;
@@ -973,6 +975,9 @@ static inline int sk_wmem_schedule(struct sock *sk, int size)
 {
 	if (!sk_has_account(sk))
 		return 1;
+	/* 先比较size(也就是skb->truesize)和预分配的内存大小。
+	 * 如果小于等于预分配的大小，则直接返回，否则调用__sk_mem_schedule进行调整 
+	 */
 	return size <= sk->sk_forward_alloc ||
 		__sk_mem_schedule(sk, size, SK_MEM_SEND);
 }
@@ -1018,8 +1023,8 @@ static inline void sk_mem_uncharge(struct sock *sk, int size)
 static inline void sk_wmem_free_skb(struct sock *sk, struct sk_buff *skb)
 {
 	sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
-	sk->sk_wmem_queued -= skb->truesize;
-	sk_mem_uncharge(sk, skb->truesize);
+	sk->sk_wmem_queued -= skb->truesize; /* 这里减小已用发送缓存的大小 */
+	sk_mem_uncharge(sk, skb->truesize); /* 这里增加预分配缓存的大小 */
 	__kfree_skb(skb);
 }
 
@@ -1502,7 +1507,7 @@ static inline void skb_set_owner_w(struct sk_buff *skb, struct sock *sk)
 	 * is enough to guarantee sk_free() wont free this sock until
 	 * all in-flight packets are completed
 	 */
-	atomic_add(skb->truesize, &sk->sk_wmem_alloc);
+	atomic_add(skb->truesize, &sk->sk_wmem_alloc); /* 更新sk_wmem_alloc域，就是sk_wmem_alloc+truesize. */
 }
 
 static inline void skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
@@ -1572,7 +1577,8 @@ static inline void sk_wake_async(struct sock *sk, int how, int band)
 
 static inline void sk_stream_moderate_sndbuf(struct sock *sk)
 {
-	if (!(sk->sk_userlocks & SOCK_SNDBUF_LOCK)) {
+	if (!(sk->sk_userlocks & SOCK_SNDBUF_LOCK)) { /* 如果应用层设置了缓存大小，则内核就不调整了 */
+		/* sndbuf调整为大于最小值，小于sk->sk_wmem_queued >> 1 */
 		sk->sk_sndbuf = min(sk->sk_sndbuf, sk->sk_wmem_queued >> 1);
 		sk->sk_sndbuf = max(sk->sk_sndbuf, SOCK_MIN_SNDBUF);
 	}

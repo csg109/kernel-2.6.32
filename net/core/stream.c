@@ -29,7 +29,10 @@ void sk_stream_write_space(struct sock *sk)
 {
 	struct socket *sock = sk->sk_socket;
 
-	if (sk_stream_wspace(sk) >= sk_stream_min_wspace(sk) && sock) {
+	/* sk_wmem_queued < (2/3)*sk_sndbuf, 即已用的发送缓存小于可用写缓存的2/3,
+	 * 即说明有可用发送缓存，然后唤醒应用层
+	 */
+	if (sk_stream_wspace(sk) >= sk_stream_min_wspace(sk) && sock) { 
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 
 		if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))

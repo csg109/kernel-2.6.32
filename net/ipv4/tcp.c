@@ -320,7 +320,7 @@ void tcp_enter_memory_pressure(struct sock *sk)
 {
 	if (!tcp_memory_pressure) {
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPMEMORYPRESSURES);
-		tcp_memory_pressure = 1;
+		tcp_memory_pressure = 1; /* 设置压力标志 */
 	}
 }
 
@@ -528,9 +528,9 @@ static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 	tcb->flags   = TCPCB_FLAG_ACK;
 	tcb->sacked  = 0;
 	skb_header_release(skb);
-	tcp_add_write_queue_tail(sk, skb);
-	sk->sk_wmem_queued += skb->truesize;
-	sk_mem_charge(sk, skb->truesize);
+	tcp_add_write_queue_tail(sk, skb); /* 把skb加入sk_write_queue发送队列的尾部 */
+	sk->sk_wmem_queued += skb->truesize; /* 增加已分配的缓存大小 */
+	sk_mem_charge(sk, skb->truesize); /* 这里调整sk_forward_alloc的大小，也就是预分配buf的大小(减小) */
 	if (tp->nonagle & TCP_NAGLE_PUSH)
 		tp->nonagle &= ~TCP_NAGLE_PUSH;
 }
@@ -680,10 +680,11 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 	struct sk_buff *skb;
 
 	/* The TCP header must be at least 32-bit aligned.  */
-	size = ALIGN(size, 4);
+	size = ALIGN(size, 4); /* 对齐4字节 */
 
-	skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
+	skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp); /* 分配skb */
 	if (skb) {
+		/* 判断内存的压力情况, 可以分配则返回skb */
 		if (sk_wmem_schedule(sk, skb->truesize)) {
 			/*
 			 * Make sure that we have exactly size bytes
@@ -693,9 +694,9 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 			return skb;
 		}
 		__kfree_skb(skb);
-	} else {
-		sk->sk_prot->enter_memory_pressure(sk);
-		sk_stream_moderate_sndbuf(sk);
+	} else { /* 进入内存压力模式并调整sndbuf */
+		sk->sk_prot->enter_memory_pressure(sk); /* tcp_enter_memory_pressure(), 设置标志进入TCP memory pressure zone */
+		sk_stream_moderate_sndbuf(sk); /* 减小sndbuf */
 	}
 	return NULL;
 }
@@ -881,6 +882,7 @@ static inline int select_size(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int tmp = tp->mss_cache;
 
+	/* 判断是否使用scatter-gather */
 	if (sk->sk_route_caps & NETIF_F_SG) {
 		if (sk_can_gso(sk))
 			tmp = 0;
@@ -955,9 +957,11 @@ new_segment:
 				/* Allocate new segment. If the interface is SG,
 				 * allocate skb fitting to single page.
 				 */
+				/* 判断是否还有空间来供我们分配，如果没有则跳到wait_for_sndbuf来等待buf的释放 */
 				if (!sk_stream_memory_free(sk))
 					goto wait_for_sndbuf;
 
+				/* 分配一个skb */
 				skb = sk_stream_alloc_skb(sk, select_size(sk),
 						sk->sk_allocation);
 				if (!skb)
@@ -969,7 +973,7 @@ new_segment:
 				if (sk->sk_route_caps & NETIF_F_ALL_CSUM)
 					skb->ip_summed = CHECKSUM_PARTIAL;
 
-				skb_entail(sk, skb);
+				skb_entail(sk, skb); /* 把skb加入发送队列并调整已分配和预分配的缓存大小 */
 				copy = size_goal;
 				max = size_goal;
 			}
@@ -1081,7 +1085,8 @@ new_segment:
 			continue;
 
 wait_for_sndbuf:
-			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
+			/* 设置写缓存空间不够用的标志, 收到确认时判断有这个标志后调用tcp_new_space()增加写缓存 */
+			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags); 
 wait_for_memory:
 			if (copied)
 				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);

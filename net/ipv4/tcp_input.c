@@ -262,10 +262,10 @@ static inline int TCP_ECN_rcv_ecn_echo(struct tcp_sock *tp, struct tcphdr *th)
 
 static void tcp_fixup_sndbuf(struct sock *sk)
 {
-	int sndmem = SKB_TRUESIZE(tcp_sk(sk)->rx_opt.mss_clamp + MAX_TCP_HEADER);
+	int sndmem = SKB_TRUESIZE(tcp_sk(sk)->rx_opt.mss_clamp + MAX_TCP_HEADER); /* MSS+所有头部最大长度 */
 
-	sndmem *= TCP_INIT_CWND;
-	if (sk->sk_sndbuf < sndmem)
+	sndmem *= TCP_INIT_CWND; /* 初始拥塞窗口的数据包需要使用的缓存 */
+	if (sk->sk_sndbuf < sndmem) /* 如果当前可用发送缓存比初始拥塞窗口的大小还小，则修改为初始拥塞窗口大小的缓存 */
 		sk->sk_sndbuf = min(sndmem, sysctl_tcp_wmem[2]);
 }
 
@@ -370,6 +370,9 @@ static void tcp_init_buffer_space(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int maxwin;
 
+	/* 判断sk_userlocks，来决定是否需要fix缓冲区大小
+	 * 如果应用层调用了setsockopt设置缓冲区的大小，则这里不进行调整
+	 */
 	if (!(sk->sk_userlocks & SOCK_RCVBUF_LOCK))
 		tcp_fixup_rcvbuf(sk);
 	if (!(sk->sk_userlocks & SOCK_SNDBUF_LOCK))
@@ -5099,6 +5102,7 @@ void tcp_cwnd_application_limited(struct sock *sk)
 	tp->snd_cwnd_stamp = tcp_time_stamp;
 }
 
+/* 用来判断是否增加发送缓存 */
 static int tcp_should_expand_sndbuf(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -5106,19 +5110,19 @@ static int tcp_should_expand_sndbuf(struct sock *sk)
 	/* If the user specified a specific send buffer setting, do
 	 * not modify it.
 	 */
-	if (sk->sk_userlocks & SOCK_SNDBUF_LOCK)
+	if (sk->sk_userlocks & SOCK_SNDBUF_LOCK) /* 如果应用层设置了发送缓存，则不调整 */
 		return 0;
 
 	/* If we are under global TCP memory pressure, do not expand.  */
-	if (tcp_memory_pressure)
+	if (tcp_memory_pressure) /* 如果存在内存压力，不调整 */
 		return 0;
 
 	/* If we are under soft global TCP memory pressure, do not expand.  */
-	if (atomic_read(&tcp_memory_allocated) >= sysctl_tcp_mem[0])
+	if (atomic_read(&tcp_memory_allocated) >= sysctl_tcp_mem[0]) /* 当前TCP使用的总的内存大于tcp_mem[0],不调整 */
 		return 0;
 
 	/* If we filled the congestion window, do not expand.  */
-	if (tp->packets_out >= tp->snd_cwnd)
+	if (tp->packets_out >= tp->snd_cwnd) /* 说明拥塞窗口才是瓶颈，所以也不调整 */
 		return 0;
 
 	return 1;
@@ -5130,40 +5134,43 @@ static int tcp_should_expand_sndbuf(struct sock *sk)
  *
  * PROBLEM: sndbuf expansion does not work well with largesend.
  */
+/* 该函数用来增加发送缓存 */
 static void tcp_new_space(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (tcp_should_expand_sndbuf(sk)) {
+	if (tcp_should_expand_sndbuf(sk)) { /* 判断能否增加发送缓存 */
+		/* 得到skb整体的大小 */
 		int sndmem = SKB_TRUESIZE(max_t(u32,
 						tp->rx_opt.mss_clamp,
 						tp->mss_cache) +
 					  MAX_TCP_HEADER);
 		int demanded = max_t(unsigned int, tp->snd_cwnd,
 				     tp->reordering + 1);
-		sndmem *= 2 * demanded;
-		if (sndmem > sk->sk_sndbuf)
+		sndmem *= 2 * demanded; /* 拥塞窗口的两倍大小 */
+		if (sndmem > sk->sk_sndbuf) /* 取大着 */
 			sk->sk_sndbuf = min(sndmem, sysctl_tcp_wmem[2]);
 		tp->snd_cwnd_stamp = tcp_time_stamp;
 	}
 
-	sk->sk_write_space(sk);
+	/* TCP为sk_stream_write_space(), 如果剩余发送缓存够用，则唤醒应用层 */
+	sk->sk_write_space(sk); 
 }
 
 static void tcp_check_space(struct sock *sk)
 {
-	if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
+	if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) { /* 在有skb被释放时(如确认了数据)会设置该标志 */
 		sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
 		if (sk->sk_socket &&
 		    test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-			tcp_new_space(sk);
+			tcp_new_space(sk); /* 调整发送缓存 */
 	}
 }
 
 static inline void tcp_data_snd_check(struct sock *sk)
 {
-	tcp_push_pending_frames(sk);
-	tcp_check_space(sk);
+	tcp_push_pending_frames(sk); /* 发送数据包 */
+	tcp_check_space(sk); /* 调整发送缓存 */
 }
 
 /*

@@ -50,7 +50,7 @@ extern struct inet_hashinfo tcp_hashinfo;
 extern struct percpu_counter tcp_orphan_count;
 extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 
-#define MAX_TCP_HEADER	(128 + MAX_HEADER)
+#define MAX_TCP_HEADER	(128 + MAX_HEADER) 	/* 这个值表示TCP header + IP header + link layer header 以及option的最大长度 */
 #define MAX_TCP_OPTION_SPACE 40
 
 /* 

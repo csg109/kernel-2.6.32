@@ -473,7 +473,7 @@ static void skb_release_head_state(struct sk_buff *skb)
 #endif
 	if (skb->destructor) {
 		WARN_ON(in_irq());
-		skb->destructor(skb);
+		skb->destructor(skb);  /* µ÷ÓÃsock_wfree() */
 	}
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	nf_conntrack_put(skb->nfct);
