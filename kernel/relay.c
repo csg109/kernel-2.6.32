@@ -130,29 +130,31 @@ static int relay_mmap_buf(struct rchan_buf *buf, struct vm_area_struct *vma)
  *	Returns a pointer to the resulting buffer, %NULL if unsuccessful. The
  *	passed in size will get page aligned, if it isn't already.
  */
+/* 分配缓存区对应的page，并返回page对应的虚拟连续地址 */
 static void *relay_alloc_buf(struct rchan_buf *buf, size_t *size)
 {
 	void *mem;
 	unsigned int i, j, n_pages;
 
-	*size = PAGE_ALIGN(*size);
-	n_pages = *size >> PAGE_SHIFT;
+	*size = PAGE_ALIGN(*size); /* 对齐到页 */
+	n_pages = *size >> PAGE_SHIFT; /* 需要分配n_pages个页 */
 
-	buf->page_array = relay_alloc_page_array(n_pages);
+	buf->page_array = relay_alloc_page_array(n_pages); /* 分配缓存区对应的page的指针数组 */
 	if (!buf->page_array)
 		return NULL;
 
+	/* 循环分配n_pages个页，赋值给rchan_buf->page_array */
 	for (i = 0; i < n_pages; i++) {
 		buf->page_array[i] = alloc_page(GFP_KERNEL);
 		if (unlikely(!buf->page_array[i]))
 			goto depopulate;
 		set_page_private(buf->page_array[i], (unsigned long)buf);
 	}
-	mem = vmap(buf->page_array, n_pages, VM_MAP, PAGE_KERNEL);
+	mem = vmap(buf->page_array, n_pages, VM_MAP, PAGE_KERNEL); /* 映射到虚拟的连续地址空间 */
 	if (!mem)
 		goto depopulate;
 
-	memset(mem, 0, *size);
+	memset(mem, 0, *size); /* 清零 */
 	buf->page_count = n_pages;
 	return mem;
 
@@ -171,15 +173,15 @@ depopulate:
  */
 static struct rchan_buf *relay_create_buf(struct rchan *chan)
 {
-	struct rchan_buf *buf = kzalloc(sizeof(struct rchan_buf), GFP_KERNEL);
+	struct rchan_buf *buf = kzalloc(sizeof(struct rchan_buf), GFP_KERNEL); /* 分配rchan_buf结构 */
 	if (!buf)
 		return NULL;
 
-	buf->padding = kmalloc(chan->n_subbufs * sizeof(size_t *), GFP_KERNEL);
+	buf->padding = kmalloc(chan->n_subbufs * sizeof(size_t *), GFP_KERNEL); /* 分配每个n_subbufs个指针 */
 	if (!buf->padding)
 		goto free_buf;
 
-	buf->start = relay_alloc_buf(buf, &chan->alloc_size);
+	buf->start = relay_alloc_buf(buf, &chan->alloc_size); /* 具体分配缓存区,并把虚拟地址赋值给rchan_buf->start */
 	if (!buf->start)
 		goto free_buf;
 
@@ -373,6 +375,7 @@ static void __relay_reset(struct rchan_buf *buf, unsigned int init)
 	for (i = 0; i < buf->chan->n_subbufs; i++)
 		buf->padding[i] = 0;
 
+	/* 默认回调函数为subbuf_start_default_callback */
 	buf->chan->cb->subbuf_start(buf, buf->data, NULL, 0);
 }
 
@@ -427,6 +430,7 @@ static struct dentry *relay_create_buf_file(struct rchan *chan,
 	snprintf(tmpname, NAME_MAX, "%s%d", chan->base_filename, cpu);
 
 	/* Create file in fs */
+	/* 创建文件的回调函数，默认回调函数为create_buf_file_default_callback() */
 	dentry = chan->cb->create_buf_file(tmpname, chan->parent,
 					   S_IRUSR, buf,
 					   &chan->is_global);
@@ -449,19 +453,19 @@ static struct rchan_buf *relay_open_buf(struct rchan *chan, unsigned int cpu)
  	if (chan->is_global)
 		return chan->buf[0];
 
-	buf = relay_create_buf(chan);
+	buf = relay_create_buf(chan); /* 分配缓冲区 */
 	if (!buf)
 		return NULL;
 
 	if (chan->has_base_filename) {
-		dentry = relay_create_buf_file(chan, buf, cpu);
+		dentry = relay_create_buf_file(chan, buf, cpu); /* 创建对应的文件 */
 		if (!dentry)
 			goto free_buf;
-		relay_set_buf_dentry(buf, dentry);
+		relay_set_buf_dentry(buf, dentry); /* 对应dentry与rchan_buf结构 */
 	}
 
  	buf->cpu = cpu;
- 	__relay_reset(buf, 1);
+ 	__relay_reset(buf, 1); /* 其他变量初始化 */
 
  	if(chan->is_global) {
  		chan->buf[0] = buf;
@@ -601,7 +605,7 @@ struct rchan *relay_open(const char *base_filename,
 
 	mutex_lock(&relay_channels_mutex);
 	for_each_online_cpu(i) {
-		chan->buf[i] = relay_open_buf(chan, i);
+		chan->buf[i] = relay_open_buf(chan, i); /* 针对每个CPU分配缓存区 */
 		if (!chan->buf[i])
 			goto free_bufs;
 	}
@@ -725,14 +729,14 @@ size_t relay_switch_subbuf(struct rchan_buf *buf, size_t length)
 	void *old, *new;
 	size_t old_subbuf, new_subbuf;
 
-	if (unlikely(length > buf->chan->subbuf_size))
+	if (unlikely(length > buf->chan->subbuf_size)) /* 写入长度比subbuf还大的情况, 后面返回0表示放弃该数据 */
 		goto toobig;
 
-	if (buf->offset != buf->chan->subbuf_size + 1) {
-		buf->prev_padding = buf->chan->subbuf_size - buf->offset;
+	if (buf->offset != buf->chan->subbuf_size + 1) { /* 当前subbuf没有刚好用完，存在剩余空间 */
+		buf->prev_padding = buf->chan->subbuf_size - buf->offset; /* 这个subbuf剩余的空间 */
 		old_subbuf = buf->subbufs_produced % buf->chan->n_subbufs;
 		buf->padding[old_subbuf] = buf->prev_padding;
-		buf->subbufs_produced++;
+		buf->subbufs_produced++; /* 下一个subbuf */
 		if (buf->dentry)
 			buf->dentry->d_inode->i_size +=
 				buf->chan->subbuf_size -
@@ -752,8 +756,8 @@ size_t relay_switch_subbuf(struct rchan_buf *buf, size_t length)
 	}
 
 	old = buf->data;
-	new_subbuf = buf->subbufs_produced % buf->chan->n_subbufs;
-	new = buf->start + new_subbuf * buf->chan->subbuf_size;
+	new_subbuf = buf->subbufs_produced % buf->chan->n_subbufs; /* 下一个subbuf */
+	new = buf->start + new_subbuf * buf->chan->subbuf_size; /* 新的subbuf起始地址 */
 	buf->offset = 0;
 	if (!buf->chan->cb->subbuf_start(buf, new, old, buf->prev_padding)) {
 		buf->offset = buf->chan->subbuf_size + 1;
@@ -762,7 +766,7 @@ size_t relay_switch_subbuf(struct rchan_buf *buf, size_t length)
 	buf->data = new;
 	buf->padding[new_subbuf] = 0;
 
-	if (unlikely(length + buf->offset > buf->chan->subbuf_size))
+	if (unlikely(length + buf->offset > buf->chan->subbuf_size)) /* 数据过大，放弃 */
 		goto toobig;
 
 	return length;

@@ -90,14 +90,26 @@
 		 - (unsigned long)__per_cpu_start)
 #endif
 
+/* 内核使用pcpu_chunk结构管理percpu内存 */
 struct pcpu_chunk {
 	struct list_head	list;		/* linked to pcpu_slot lists */
+						/* 用来把chunk链接起来形成链表。每一个链表又都放到pcpu_slot数组中，
+						 * 根据chunk中空闲空间的大小决定放到数组的哪个元素中 */
 	int			free_size;	/* free bytes in the chunk */
+						/* chunk中的空闲大小 */
 	int			contig_hint;	/* max contiguous size hint */
+						/* 该chunk中最大的可用空间的map项的size */
 	void			*base_addr;	/* base address of this chunk */
+						/* percpu内存开始基地值 */
 	int			map_used;	/* # of map entries used */
+						/* 该chunk中使用了多少个map项 */
 	int			map_alloc;	/* # of map entries allocated */
+						/* 记录map数组的项数，为PERCPU_DYNAMIC_EARLY_SLOTS=128
+						 * 若map项>0,表示该map中记录的size是可以用来分配percpu空间的
+						 * 若map项<0,表示该map项中的size已经被分配使用
+						 */
 	int			*map;		/* allocation map */
+						/* map数组，记录该chunk的空间使用情况 */
 	struct vm_struct	**vms;		/* mapped vmalloc regions */
 	bool			immutable;	/* no [de]population allowed */
 	unsigned long		populated[];	/* populated bitmap */
@@ -1089,7 +1101,7 @@ static void *pcpu_alloc(size_t size, size_t align, bool reserved)
 	if (reserved && pcpu_reserved_chunk) {
 		chunk = pcpu_reserved_chunk;
 
-		if (size > chunk->contig_hint) {
+		if (size > chunk->contig_hint) { /* 检查要分配的空间size是否超出该chunk的所具有的最大的空闲size */
 			err = "alloc from reserved chunk failed";
 			goto fail_unlock;
 		}

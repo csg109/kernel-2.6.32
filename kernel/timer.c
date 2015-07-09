@@ -58,8 +58,8 @@ EXPORT_SYMBOL(jiffies_64);
  */
 #define TVN_BITS (CONFIG_BASE_SMALL ? 4 : 6)
 #define TVR_BITS (CONFIG_BASE_SMALL ? 6 : 8)
-#define TVN_SIZE (1 << TVN_BITS)
-#define TVR_SIZE (1 << TVR_BITS)
+#define TVN_SIZE (1 << TVN_BITS)	/* 64 */
+#define TVR_SIZE (1 << TVR_BITS)	/* 256 */
 #define TVN_MASK (TVN_SIZE - 1)
 #define TVR_MASK (TVR_SIZE - 1)
 
@@ -73,9 +73,12 @@ struct tvec_root {
 
 struct tvec_base {
 	spinlock_t lock;
-	struct timer_list *running_timer;
-	unsigned long timer_jiffies;
+	struct timer_list *running_timer;	/* 表示由本地cpu正在处理的定时器链表 */
+	unsigned long timer_jiffies;		/* 表示当前的定时器级联表中最快要超时的定时器的jiffer */
 	unsigned long next_timer;
+	/*
+	 * 下面表示了5级的定时器级联表
+	 */
 	struct tvec_root tv1;
 	struct tvec tv2;
 	struct tvec tv3;
@@ -327,12 +330,23 @@ static inline void set_running_timer(struct tvec_base *base,
 #endif
 }
 
+/*
+ * 内核注册定时器最终都会通过调用internal_add_timer来实现.具体的工作方式是这样的:
+ *
+ * 1 如果定时器在接下来的0~255个jiffies中到期,则将定时器添加到tv1.
+ * 2 如果定时器是在接下来的256*64个jiffies中到期,则将定时器添加到tv2.
+ * 3 如果定时器是在接下来的256*64*64个jiffies中到期,则将定时器添加到tv3.
+ * 4 如果定时器是在接下来的256*64*64*64个jiffies中到期,则将定时器添加到tv4.
+ * 5 如果更大的超时,则利用0xffffffff来计算hash,然后插入到tv5(这个只会出现在64的系统). 
+ *
+ */
 static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 {
-	unsigned long expires = timer->expires;
-	unsigned long idx = expires - base->timer_jiffies;
+	unsigned long expires = timer->expires; /* 超时的jiffies */
+	unsigned long idx = expires - base->timer_jiffies; /* 得到定时器还有多长时间到期(这里是相对于最短的那个定时器) */
 	struct list_head *vec;
-
+	
+	/* 开始判断该把定时器加入到那个队列.依次为tv1到tv5 */
 	if (idx < TVR_SIZE) {
 		int i = expires & TVR_MASK;
 		vec = base->tv1.vec + i;
@@ -345,7 +359,7 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 	} else if (idx < 1 << (TVR_BITS + 3 * TVN_BITS)) {
 		int i = (expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK;
 		vec = base->tv4.vec + i;
-	} else if ((signed long) idx < 0) {
+	} else if ((signed long) idx < 0) { /* 超时时间已过或者为jiffies */
 		/*
 		 * Can happen if you add a timer with expires == jiffies,
 		 * or you set a timer to go off in the past
@@ -366,7 +380,7 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 	/*
 	 * Timers are FIFO:
 	 */
-	list_add_tail(&timer->entry, vec);
+	list_add_tail(&timer->entry, vec); /* 最终加入链表 */
 }
 
 #ifdef CONFIG_TIMER_STATS
@@ -679,7 +693,7 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 #endif
 	new_base = per_cpu(tvec_bases, cpu);
 
-	if (base != new_base) {
+	if (base != new_base) { /* 由于timer可能已被迁移到其他CPU的tev_base,会造成 base != new_base */
 		/*
 		 * We are trying to schedule the timer on the local CPU.
 		 * However we can't change timer's base while it is running,
@@ -687,13 +701,15 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 		 * handler yet has not finished. This also guarantees that
 		 * the timer is serialized wrt itself.
 		 */
+		/* 以下如果timer挂在别的cpu上，则把他移到本CPU上 */
 		if (likely(base->running_timer != timer)) {
 			/* See the comment in lock_timer_base() */
+			/* 由于timer在别的CPU上，不能直接更改base, 先位或一个叫做TBASE_DEFERRABLE_FLAG（可延后标志）后处理 */
 			timer_set_base(timer, NULL);
-			spin_unlock(&base->lock);
-			base = new_base;
-			spin_lock(&base->lock);
-			timer_set_base(timer, base);
+			spin_unlock(&base->lock); /* 解锁timer原来的CPU */
+			base = new_base;	/* base现在为本地的CPU */
+			spin_lock(&base->lock); /* 锁上本地CPU */
+			timer_set_base(timer, base);  /* 将timer的调整为对应本地CPU的tvec_base */
 		}
 	}
 
@@ -950,6 +966,7 @@ static int cascade(struct tvec_base *base, struct tvec *tv, int index)
 	struct timer_list *timer, *tmp;
 	struct list_head tv_list;
 
+	/* 这里实例化tv_list为我们将要处理的链表.并将旧的list重新初始化为空 */
 	list_replace_init(tv->vec + index, &tv_list);
 
 	/*
@@ -958,12 +975,14 @@ static int cascade(struct tvec_base *base, struct tvec *tv, int index)
 	 */
 	list_for_each_entry_safe(timer, tmp, &tv_list, entry) {
 		BUG_ON(tbase_get_base(timer->base) != base);
-		internal_add_timer(base, timer);
+		internal_add_timer(base, timer); /* /重新加入定时器,也就是加入到自己对应的位置 */
 	}
 
+	/* 然后返回index,这里可以看到如果index为0则说明这个级别的定时器也已经都处理过了,因此我们需要再处理下一个级别 */
 	return index;
 }
 
+/* 得到在N级(也就是tv2,tv3...)的定时器表中的slot.这里可以对照internal_add_timer加入定时器的情况 */
 #define INDEX(N) ((base->timer_jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK)
 
 /**
@@ -977,34 +996,45 @@ static inline void __run_timers(struct tvec_base *base)
 {
 	struct timer_list *timer;
 
-	spin_lock_irq(&base->lock);
-	while (time_after_eq(jiffies, base->timer_jiffies)) {
+	spin_lock_irq(&base->lock); /* 关闭中断并且开启自旋锁 */
+	while (time_after_eq(jiffies, base->timer_jiffies)) { /* 遍历定时器级链表 */
+		/* 这里的head和work_list其实表示的就是已经超时的定时器,也就是将要处理的定时器. */
 		struct list_head work_list;
 		struct list_head *head = &work_list;
-		int index = base->timer_jiffies & TVR_MASK;
+		int index = base->timer_jiffies & TVR_MASK; /* 从timer_jiffies得到所在index,其实也就是在tv1中的index  */
 
 		/*
 		 * Cascade timers:
 		 */
+		/* 开始处理层叠定时器,这里的这个cascade是一个关键的函数,
+		 * 用来一层层的得到这个定时器处于哪个级别中.  */
 		if (!index &&
 			(!cascade(base, &base->tv2, INDEX(0))) &&
 				(!cascade(base, &base->tv3, INDEX(1))) &&
 					!cascade(base, &base->tv4, INDEX(2)))
 			cascade(base, &base->tv5, INDEX(3));
-		++base->timer_jiffies;
+		++base->timer_jiffies; /* 更新timer_jiffies */
+
+		/* 用work_list替换掉base->tv1.vec + index 
+		 * 这里因为上面的处理中,就算定时器不在base->tv1中,可是通过cascade的调节,
+		 * 会将base->tv2加入到base->tv1中,或者说base->tv3,以此类推 
+		 */
 		list_replace_init(base->tv1.vec + index, &work_list);
-		while (!list_empty(head)) {
+		while (!list_empty(head)) { /* 如果这个值不为空说明有已经超时的定时器.这里head也就是work_list,也就是base->tv1 */
 			void (*fn)(unsigned long);
 			unsigned long data;
 
-			timer = list_first_entry(head, struct timer_list,entry);
+			timer = list_first_entry(head, struct timer_list, entry); /* 取出定时器 */
 			fn = timer->function;
 			data = timer->data;
 
 			timer_stats_account_timer(timer);
 
+			/* 设置当前正在处理的定时器为timer(这个主要是针对smp的架构),
+			 * 因为我们是在软中断中进行的, 因此要防止多个cpu的并发 
+			 */
 			set_running_timer(base, timer);
-			detach_timer(timer, 1);
+			detach_timer(timer, 1); /* 删除这个定时器 */
 
 			spin_unlock_irq(&base->lock);
 			{
@@ -1032,7 +1062,7 @@ static inline void __run_timers(struct tvec_base *base)
 				lock_map_acquire(&lockdep_map);
 
 				trace_timer_expire_entry(timer);
-				fn(data);
+				fn(data); /* 执行定时器回调函数 */
 				trace_timer_expire_exit(timer);
 
 				lock_map_release(&lockdep_map);
@@ -1049,7 +1079,7 @@ static inline void __run_timers(struct tvec_base *base)
 			spin_lock_irq(&base->lock);
 		}
 	}
-	set_running_timer(base, NULL);
+	set_running_timer(base, NULL); /* 修改base->running_timer为空 */
 	spin_unlock_irq(&base->lock);
 }
 
@@ -1230,8 +1260,9 @@ static void run_timer_softirq(struct softirq_action *h)
 {
 	struct tvec_base *base = __get_cpu_var(tvec_bases);
 
-	hrtimer_run_pending();
+	hrtimer_run_pending(); /* 处理hrt timer */
 
+	/* 判断当前的jiffies是否大于等于最小的那个超时jiffies.是的话就进入定时器处理 */
 	if (time_after_eq(jiffies, base->timer_jiffies))
 		__run_timers(base);
 }
@@ -1242,7 +1273,7 @@ static void run_timer_softirq(struct softirq_action *h)
 void run_local_timers(void)
 {
 	hrtimer_run_queues();
-	raise_softirq(TIMER_SOFTIRQ);
+	raise_softirq(TIMER_SOFTIRQ); /* 触发定时器软中断 */
 }
 
 /*
@@ -1662,14 +1693,15 @@ static struct notifier_block __cpuinitdata timers_nb = {
 
 void __init init_timers(void)
 {
+	/* 主要是初始化boot_tvec_bases(如果是smp,则会初始化所有cpu上的boot_tvec_bases) */
 	int err = timer_cpu_notify(&timers_nb, (unsigned long)CPU_UP_PREPARE,
 				(void *)(long)smp_processor_id());
 
 	init_timer_stats();
 
 	BUG_ON(err == NOTIFY_BAD);
-	register_cpu_notifier(&timers_nb);
-	open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+	register_cpu_notifier(&timers_nb); /* 注册到cpu的notify chain */
+	open_softirq(TIMER_SOFTIRQ, run_timer_softirq); /* 注册软中断 */
 }
 
 /**

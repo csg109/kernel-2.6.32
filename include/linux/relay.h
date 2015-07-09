@@ -32,24 +32,24 @@
  */
 struct rchan_buf
 {
-	void *start;			/* start of channel buffer */
-	void *data;			/* start of current sub-buffer */
-	size_t offset;			/* current offset into sub-buffer */
-	size_t subbufs_produced;	/* count of sub-buffers produced */
-	size_t subbufs_consumed;	/* count of sub-buffers consumed */
-	struct rchan *chan;		/* associated channel */
+	void *start;			/* start of channel buffer *//* 缓存区分配的页对应的虚拟连续地址空间 */
+	void *data;			/* start of current sub-buffer *//* 当前subbuf的起始地址 */
+	size_t offset;			/* current offset into sub-buffer *//* 表示在当前subbuf的偏移 */
+	size_t subbufs_produced;	/* count of sub-buffers produced *//* 表示已经写的subbuf的个数 */
+	size_t subbufs_consumed;	/* count of sub-buffers consumed *//* 表示已经读完的subbuf的个数 */
+	struct rchan *chan;		/* associated channel *//* 指向rchan结构 */
 	wait_queue_head_t read_wait;	/* reader wait queue */
-	struct timer_list timer; 	/* reader wake-up timer */
+	struct timer_list timer; 	/* reader wake-up timer *//* 定时器函数为wakeup_readers */
 	struct dentry *dentry;		/* channel file dentry */
 	struct kref kref;		/* channel buffer refcount */
-	struct page **page_array;	/* array of current buffer pages */
-	unsigned int page_count;	/* number of current buffer pages */
+	struct page **page_array;	/* array of current buffer pages *//* 缓存区对应page的指针数组(单个CPU) */
+	unsigned int page_count;	/* number of current buffer pages *//* 缓存区page的个数，为chan->alloc_size对应页的个数 */
 	unsigned int finalized;		/* buffer has been finalized */
 	size_t *padding;		/* padding counts per sub-buffer */
 	size_t prev_padding;		/* temporary variable */
 	size_t bytes_consumed;		/* bytes consumed in cur read subbuf */
 	size_t early_bytes;		/* bytes consumed before VFS inited */
-	unsigned int cpu;		/* this buf's cpu */
+	unsigned int cpu;		/* this buf's cpu *//* 对应的CPU */
 } ____cacheline_aligned;
 
 /*
@@ -60,12 +60,12 @@ struct rchan
 	u32 version;			/* the version of this struct */
 	size_t subbuf_size;		/* sub-buffer size */
 	size_t n_subbufs;		/* number of sub-buffers per buffer */
-	size_t alloc_size;		/* total buffer size allocated */
+	size_t alloc_size;		/* total buffer size allocated *//* 每个CPU上分配的缓存区大小,即 subbuf_size * n_subbufs */
 	struct rchan_callbacks *cb;	/* client callbacks */
 	struct kref kref;		/* channel refcount */
 	void *private_data;		/* for user-defined data */
 	size_t last_toobig;		/* tried to log event > subbuf size */
-	struct rchan_buf *buf[NR_CPUS]; /* per-cpu channel buffers */
+	struct rchan_buf *buf[NR_CPUS]; /* per-cpu channel buffers *//* 管理每个CPU对应的缓存区结构体 */
 	int is_global;			/* One global buffer ? */
 	struct list_head list;		/* for channel list */
 	struct dentry *parent;		/* parent dentry passed to open */
@@ -206,11 +206,11 @@ static inline void relay_write(struct rchan *chan,
 	struct rchan_buf *buf;
 
 	local_irq_save(flags);
-	buf = chan->buf[smp_processor_id()];
-	if (unlikely(buf->offset + length > chan->subbuf_size))
+	buf = chan->buf[smp_processor_id()]; /* 根据CPU找到rchan_buf */
+	if (unlikely(buf->offset + length > chan->subbuf_size)) /* 当前subbuf不够写，需要切换下一个subbuf */
 		length = relay_switch_subbuf(buf, length);
-	memcpy(buf->data + buf->offset, data, length);
-	buf->offset += length;
+	memcpy(buf->data + buf->offset, data, length); /* 写数据 */
+	buf->offset += length; /* 改变偏移 */
 	local_irq_restore(flags);
 }
 

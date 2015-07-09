@@ -2061,7 +2061,7 @@ static void tcp_check_reno_reordering(struct sock *sk, const int addend)
 static void tcp_add_reno_sack(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	tp->sacked_out++;
+	tp->sacked_out++; /* 增加重复确认的次数 */
 	tcp_check_reno_reordering(sk, 0);
 	tcp_verify_left_out(tp);
 }
@@ -3129,7 +3129,7 @@ static void tcp_update_cwnd_in_recovery(struct sock *sk, int newly_acked_sacked,
 static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 				  int newly_acked_sacked, bool is_dupack,
 				  int flag)
-/* pkts_acked为包含sack的ack的段数，即忽略sack中的
+/* pkts_acked为包含sack的ack的段数，即包含sack中的段
  * newly_acked_sacked为不包含sack的ack段数, 即扣去sack中ack的段数
  * is_dupack 是否为重复ack
  */
@@ -5180,15 +5180,24 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	    /* More than one full frame received... */
+	 /* More than one full frame received... */
+	 /* 接收窗口中有大于一个段没有确认，通常情况下就是两个段一个ack了
+	  * rcv_nxt和rcv_wup分别表示期望接收的下一个段、上一个已经确认的段
+	  */
 	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss
 	     /* ... and right edge of window advances far enough.
 	      * (tcp_recvmsg() will send ACK otherwise). Or...
 	      */
+	     /* 根据剩余空间算出的window大小大于等于接收窗口，即有足够的空间容纳接收的段 */
 	     && __tcp_select_window(sk) >= tp->rcv_wnd) ||
 	    /* We ACK each frame or... */
+	    /* 快速确认模式
+	     * 在TCP进行synsent状态处理、发送dupack、接收到窗口之外的数据段、或者收到ECN标志段时，进入快速确认模式
+	     * 持续快速确认模式的时间是有限的，大概可以连续发送8次ack，之后就要退出
+	     */
 	    tcp_in_quickack_mode(sk) ||
 	    /* We have out of order data. */
+	    /* 乱序一般由丢包造成，在有丢包的情况下，网络可能已经拥塞，需要立即发送ack，通告对方降低发送速率 */
 	    (ofo_possible && skb_peek(&tp->out_of_order_queue))) {
 		/* Then ack it now */
 		tcp_send_ack(sk);

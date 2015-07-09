@@ -109,7 +109,7 @@ struct inet_connection_sock {
 	struct {
 		__u8		  pending;	 /* ACK is pending			   */
 		__u8		  quick;	 /* Scheduled number of quick acks	   */
-		__u8		  pingpong;	 /* The session is interactive		   */
+		__u8		  pingpong;	 /* The session is interactive		   *//* 表示这是个交互式的连接 */
 		__u8		  blocked;	 /* Delayed ACK was blocked by socket lock */
 		__u32		  ato;		 /* Predicted tick of soft clock	   */
 		unsigned long	  timeout;	 /* Currently scheduled timeout		   */

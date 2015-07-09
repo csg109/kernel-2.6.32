@@ -11,16 +11,16 @@ struct tvec_base;
 
 struct timer_list {
 	struct list_head entry;
-	unsigned long expires;
+	unsigned long expires;		/* 超时jiffies */
 
-	void (*function)(unsigned long);
-	unsigned long data;
+	void (*function)(unsigned long); /* 定时器将要执行的回调函数  */
+	unsigned long data;		/* 传递给回调函数的参数 */
 
-	struct tvec_base *base;
+	struct tvec_base *base;		/* 从属于哪个base */
 #ifdef CONFIG_TIMER_STATS
-	void *start_site;
-	char start_comm[16];
-	int start_pid;
+	void *start_site;		/* 指向调用定时器的函数的指针 */
+	char start_comm[16];		/* 调用定时器的进程名 */
+	int start_pid;			/* 调用定时器的进程号 */
 #endif
 #ifdef CONFIG_LOCKDEP
 	struct lockdep_map lockdep_map;

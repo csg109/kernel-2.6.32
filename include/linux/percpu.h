@@ -68,23 +68,32 @@
 extern void *pcpu_base_addr;
 extern const unsigned long *pcpu_unit_offsets;
 
+/* 对于处理器的分组信息，内核使用struct pcpu_group_info结构表示 */
 struct pcpu_group_info {
 	int			nr_units;	/* aligned # of units */
+						/* 该组的处理器数目 */
 	unsigned long		base_offset;	/* base address offset */
+						/* 组的percpu内存地址起始地址，即组内处理器数目×处理器percpu虚拟内存递进基本单位 */
 	unsigned int		*cpu_map;	/* unit->cpu map, empty
 						 * entries contain NR_CPUS */
+						/* 组内cpu对应数组，保存cpu id号 */
 };
 
+/* 整体的percpu内存管理信息被收集在struct pcpu_alloc_info结构中 */
 struct pcpu_alloc_info {
-	size_t			static_size;
-	size_t			reserved_size;
-	size_t			dyn_size;
-	size_t			unit_size;
-	size_t			atom_size;
-	size_t			alloc_size;
+	size_t			static_size; 	/* 静态定义的percpu变量占用内存区域长度 */
+	size_t			reserved_size; 	/* 预留区域，在percpu内存分配指定为预留区域分配时，将使用该区域 */
+	size_t			dyn_size;	/* /动态分配的percpu变量占用内存区域长度 */
+	size_t			unit_size;	/* 每颗处理器的percpu虚拟内存递进基本单位
+						 * 每个cpu的percpu空间所占得内存空间为一个unit, 每个unit的大小记为unit_size
+						 */
+	size_t			atom_size;	/* PAGE_SIZE */
+	size_t			alloc_size;	/* 要分配的percpu内存空间 */
 	size_t			__ai_size;	/* internal, don't use */
+						/* /整个pcpu_alloc_info结构体的大小 */
 	int			nr_groups;	/* 0 if grouping unnecessary */
-	struct pcpu_group_info	groups[];
+						/* 该架构下的处理器分组数目 */
+	struct pcpu_group_info	groups[];	/* 该架构下的处理器分组信息 */
 };
 
 enum pcpu_fc {

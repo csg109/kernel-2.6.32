@@ -223,7 +223,7 @@ struct sock {
 #define sk_reuse		__sk_common.skc_reuse
 #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
 #define sk_bind_node		__sk_common.skc_bind_node
-#define sk_prot			__sk_common.skc_prot	/* TCPΪtcp_prot */
+#define sk_prot			__sk_common.skc_prot	/* TCP ipv4Ϊtcp_prot */
 #define sk_net			__sk_common.skc_net
 	kmemcheck_bitfield_begin(flags);
 	unsigned int		sk_shutdown  : 2,

@@ -239,8 +239,7 @@ enum module_state
 	MODULE_STATE_GOING,
 };
 
-struct module
-{
+struct module {
 	enum module_state state;
 
 	/* Member of list of modules */
