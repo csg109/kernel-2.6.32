@@ -46,24 +46,39 @@
 static struct kmem_cache *fn_hash_kmem __read_mostly;
 static struct kmem_cache *fn_alias_kmem __read_mostly;
 
-struct fib_node { /* 代表每个唯一的目的网络的路由表项， 与网段相关, 相同网段的路由表项共享同一个fib_node */
+struct fib_node { /* 每个网段对应一个fib_node结构，
+		   * 代表每个唯一的目的网络的路由表项，与网段相关, 
+		   * 相同网段的路由表项共享同一个fib_node 
+		   */
 	struct hlist_node	fn_hash;
-	struct list_head	fn_alias;
-	__be32			fn_key; 	/* 网段 */
+	struct list_head	fn_alias;	/* 指向fib_alias链表 */
+	__be32			fn_key; 	/* 网段, 如对子网10.1.1.0/24而言，fn_key值为10.1.1
+						 * 被用作查找路由表时的搜索条件
+						 */
 	struct fib_alias        fn_embedded_alias;
 };
 
-struct fn_zone {
+struct fn_zone { /* 每个fn_zone代表了路由表中所有相同目的地址掩码长度表项的集合 */
 	struct fn_zone		*fz_next;	/* Next not empty zone	*/
+						/* 指向下一个非空的fn_zone */
 	struct hlist_head	*fz_hash;	/* Hash table pointer	*/
+						/* 长度为fz_divisor的hash表，
+						 * 代表不同子网的结构fib_node被根据其路由键值fn_key，
+						 * hash到该表中 
+						 */
 	int			fz_nent;	/* Number of entries	*/
+						/* fz_hash中fib_node的数目 */
 
 	int			fz_divisor;	/* Hash divisor		*/
+						/* fz_hash哈希表的桶个数 */
 	u32			fz_hashmask;	/* (fz_divisor - 1)	*/
 #define FZ_HASHMASK(fz)		((fz)->fz_hashmask)
 
 	int			fz_order;	/* Zone order		*/
-	__be32			fz_mask;
+						/* 网络掩码fz_mask的长度
+						 * 例如255.255.255.0对应的fz_order为24
+						 */
+	__be32			fz_mask;	/* 用fz_order构造得到的网络掩码 */
 #define FZ_MASK(fz)		((fz)->fz_mask)
 };
 
@@ -72,7 +87,12 @@ struct fn_zone {
  */
 
 struct fn_hash {
+	/* fn_zones包含一个33个fn_zone结构指针组成的向量，
+	 * 用来把路由表项按照目标地址掩码的长度分成33个区,
+	 * 所有非空的fn_zone结构又通过其fz_next字段链接成一个循环单链接
+	 */
 	struct fn_zone	*fn_zones[33];
+	/* 指向fn_zones里掩码最短的那个fn_zone */
 	struct fn_zone	*fn_zone_list;
 };
 
@@ -247,16 +267,19 @@ fn_hash_lookup(struct fib_table *tb, const struct flowi *flp, struct fib_result 
 {
 	int err;
 	struct fn_zone *fz;
-	struct fn_hash *t = (struct fn_hash *)tb->tb_data;
+	struct fn_hash *t = (struct fn_hash *)tb->tb_data; /* 获取路由表项散列表 */
 
 	read_lock(&fib_hash_lock);
+	/* 遍历所有的路由表项的散列表查找相同网段的路由表项，
+	 * 然后调用fib_semantic_match()将这些路由表项与查找条件进行匹配，最后生成查询结果
+	 */
 	for (fz = t->fn_zone_list; fz; fz = fz->fz_next) {
 		struct hlist_head *head;
 		struct hlist_node *node;
 		struct fib_node *f;
-		__be32 k = fz_key(flp->fl4_dst, fz);
+		__be32 k = fz_key(flp->fl4_dst, fz); /* 将目的地址与上掩码 */
 
-		head = &fz->fz_hash[fn_hash(k, fz)];
+		head = &fz->fz_hash[fn_hash(k, fz)]; /* 用key去获取哈希的桶 */
 		hlist_for_each_entry(f, node, head, fn_hash) {
 			if (f->fn_key != k)
 				continue;
@@ -264,6 +287,7 @@ fn_hash_lookup(struct fib_table *tb, const struct flowi *flp, struct fib_result 
 			err = fib_semantic_match(&f->fn_alias,
 						 flp, res,
 						 fz->fz_order);
+			/* 找到了err为0 */
 			if (err <= 0)
 				goto out;
 		}
@@ -378,9 +402,10 @@ static int fn_hash_insert(struct fib_table *tb, struct fib_config *cfg)
 	__be32 key;
 	int err;
 
-	if (cfg->fc_dst_len > 32)
+	if (cfg->fc_dst_len > 32) /* 检测掩码长度是否有效 */
 		return -EINVAL;
 
+	/* 获取指定掩码长度的fn_zone, 如果不存在则创建一个 */
 	fz = table->fn_zones[cfg->fc_dst_len];
 	if (!fz && !(fz = fn_new_zone(table, cfg->fc_dst_len)))
 		return -ENOBUFS;
@@ -389,24 +414,27 @@ static int fn_hash_insert(struct fib_table *tb, struct fib_config *cfg)
 	if (cfg->fc_dst) {
 		if (cfg->fc_dst & ~FZ_MASK(fz))
 			return -EINVAL;
+		/* 通过目标地址和掩码得到目标地址网络键值，用于查找相应的fib_node */
 		key = fz_key(cfg->fc_dst, fz);
 	}
 
-	fi = fib_create_info(cfg);
+	fi = fib_create_info(cfg); /* 根据路由项信息创建fib_info */
 	if (IS_ERR(fi))
 		return PTR_ERR(fi);
 
+	/* fz_hash散列表容量可能发生变化，需要重建散列表 */
 	if (fz->fz_nent > (fz->fz_divisor<<1) &&
 	    fz->fz_divisor < FZ_MAX_DIVISOR &&
 	    (cfg->fc_dst_len == 32 ||
 	     (1 << cfg->fc_dst_len) > fz->fz_divisor))
 		fn_rehash_zone(fz);
 
-	f = fib_find_node(fz, key);
+	f = fib_find_node(fz, key); /* 根据key获取目的网络对应fib_node */
 
 	if (!f)
 		fa = NULL;
 	else
+		/* 根据tos和优先级匹配对应的fib_alias */
 		fa = fib_find_alias(&f->fn_alias, tos, fi->fib_priority);
 
 	/* Now fa, if non-NULL, points to the first fib alias

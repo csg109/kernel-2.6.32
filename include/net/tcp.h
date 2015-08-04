@@ -1318,7 +1318,7 @@ static inline bool retransmits_timed_out(struct sock *sk,
 	else
 		start_ts = tcp_sk(sk)->retrans_stamp;
 
-	linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base);
+	linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base); /* log2(120HZ/(HZ/5)) = 9.228 */
 
 	if (boundary <= linear_backoff_thresh)
 		timeout = ((2 << boundary) - 1) * rto_base;

@@ -871,23 +871,24 @@ int fib_semantic_match(struct list_head *head, const struct flowi *flp,
 	struct fib_alias *fa;
 	int nh_sel = 0;
 
+	/* 遍历fib_node下的fib_alist链表 */
 	list_for_each_entry_rcu(fa, head, fa_list) {
 		int err;
 
-		if (fa->fa_tos &&
+		if (fa->fa_tos && /* 检查TOS */
 		    fa->fa_tos != flp->fl4_tos)
 			continue;
 
-		if (fa->fa_scope < flp->fl4_scope)
+		if (fa->fa_scope < flp->fl4_scope) /* 检测作用范围 */
 			continue;
 
-		fa->fa_state |= FA_S_ACCESSED;
+		fa->fa_state |= FA_S_ACCESSED; /* 表示该项被访问过了 */
 
 		err = fib_props[fa->fa_type].error;
 		if (err == 0) {
 			struct fib_info *fi = fa->fa_info;
 
-			if (fi->fib_flags & RTNH_F_DEAD)
+			if (fi->fib_flags & RTNH_F_DEAD) /* 已经无效 */
 				continue;
 
 			switch (fa->fa_type) {

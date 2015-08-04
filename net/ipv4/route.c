@@ -2080,6 +2080,11 @@ static int ip_mkroute_input(struct sk_buff *skb,
  *	2. IP spoofing attempts are filtered with 100% of guarantee.
  */
 
+/*
+ * 对从网络设备输入的数据包进行路由，会调用ip_route_input()进行选路，
+ * 如果缓存中没有找到，会调用ip_route_input_slow()在路由表中进行查找，
+ * 查找命中后，则将该表项添加到路由缓存中。
+ */
 static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 			       u8 tos, struct net_device *dev)
 {
@@ -2110,7 +2115,7 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 	/* Check for the most weird martians, which can be not detected
 	   by fib_lookup.
 	 */
-
+	/* 判断地址的有效性 */
 	if (ipv4_is_multicast(saddr) || ipv4_is_lbcast(saddr) ||
 	    ipv4_is_loopback(saddr))
 		goto martian_source;
@@ -2131,7 +2136,13 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 	/*
 	 *	Now we are ready to route packet.
 	 */
+	/* 通过fib_lookup()在路由表中根据条件查找 
+	 * fib_lookup()有两个版本，
+	 * 	不支持策略路由时调用include/net/ip_fib.h里的
+	 * 	支持策略路由调用net/ipv4/fib_rules.c里的
+	 */
 	if ((err = fib_lookup(net, &fl, &res)) != 0) {
+		/* 如果查找失败，并且禁止转发，返回EHOSTUNREACH(主机没找到的错误) */
 		if (!IN_DEV_FORWARD(in_dev))
 			goto e_hostunreach;
 		goto no_route;
@@ -2140,9 +2151,13 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 
 	RT_CACHE_STAT_INC(in_slow_tot);
 
+	/* 目的地址为广播地址，由brd_input处理 */
 	if (res.type == RTN_BROADCAST)
 		goto brd_input;
 
+	/* 如果目的地址为本地接口的地址，需要检测源地址的有效性，
+	 * 通过后由local_input处理 
+	 */
 	if (res.type == RTN_LOCAL) {
 		int result;
 		result = fib_validate_source(saddr, daddr, tos,
@@ -2156,25 +2171,37 @@ static int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 		goto local_input;
 	}
 
+	/* 如果系统禁止转发，且查找命中的表项目的地址不为本地接口的地址
+	 * 则返回EHOSTUNREACH（主机没找到的错误）*/
 	if (!IN_DEV_FORWARD(in_dev))
 		goto e_hostunreach;
+
+	/* 如果目的地址不是单播地址，则返回无效 */
 	if (res.type != RTN_UNICAST)
 		goto martian_destination;
 
+	/* 在前面对转发的数据包完成校验查找到的路由后，
+	 * 调用ip_mkroute_input()创建路由缓存表项并添加到缓存中
+	 */
 	err = ip_mkroute_input(skb, &res, &fl, in_dev, daddr, saddr, tos);
-done:
+done:	/* 正常查询之后从这里返回 */
 	in_dev_put(in_dev);
 	if (free_res)
 		fib_res_put(&res);
 out:	return err;
 
-brd_input:
-	if (skb->protocol != htons(ETH_P_IP))
+brd_input: /* 这里处理目的地址为受限的广播地址255.255.255.255,
+	    * 或者目的地址和源地址都为0的情况
+	    */
+	if (skb->protocol != htons(ETH_P_IP)) /* 检验输入报文是否是IP数据包 */
 		goto e_inval;
 
+	/* 如果源地址为0，则通过ipv4_is_zeronet()选择合适的源地址 */
 	if (ipv4_is_zeronet(saddr))
 		spec_dst = inet_select_addr(dev, 0, RT_SCOPE_LINK);
-	else {
+	else { /* 否则校验该源地址是否有效, 
+		* 根据校验结果返回EHOSTUNREACH或设置该路由表项RTCF_DIRECTSRC标志 
+		*/
 		err = fib_validate_source(saddr, 0, tos, 0, dev, &spec_dst,
 					  &itag, skb->mark);
 		if (err < 0)
@@ -2182,11 +2209,14 @@ brd_input:
 		if (err)
 			flags |= RTCF_DIRECTSRC;
 	}
+	/* 给路由设置RTCF_BROADCAST标志，说明路由的目的地址是一个广播地址 */
 	flags |= RTCF_BROADCAST;
 	res.type = RTN_BROADCAST;
 	RT_CACHE_STAT_INC(in_brd);
 
-local_input:
+local_input: /* 这里处理选路的目的地址为本地接口
+	      * 创建路由缓存表项并添加到路由缓存中
+	      */
 	rth = dst_alloc(&ipv4_dst_ops);
 	if (!rth)
 		goto e_nobufs;
@@ -2227,6 +2257,9 @@ local_input:
 	goto done;
 
 no_route:
+	/* 根据RT_SCOPE_UNIVERSE范围选择地址作为路由的目的地址，
+	 * 然后转到local_input处，创建路由缓存表项 
+	 */
 	RT_CACHE_STAT_INC(in_no_route);
 	spec_dst = inet_select_addr(dev, 0, RT_SCOPE_UNIVERSE);
 	res.type = RTN_UNREACHABLE;
@@ -2238,6 +2271,8 @@ no_route:
 	 *	Do not cache martian addresses: they should be logged (RFC1812)
 	 */
 martian_destination:
+	/* 以下在选路失败时，返回相应错误码 */
+
 	RT_CACHE_STAT_INC(in_martian_dst);
 #ifdef CONFIG_IP_ROUTE_VERBOSE
 	if (IN_DEV_LOG_MARTIANS(in_dev) && net_ratelimit())
@@ -2332,7 +2367,7 @@ skip_cache:
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	return ip_route_input_slow(skb, daddr, saddr, tos, dev);
+	return ip_route_input_slow(skb, daddr, saddr, tos, dev); /* 在路由表中查找 */
 }
 
 static int __mkroute_output(struct rtable **result,
@@ -2455,6 +2490,7 @@ static int __mkroute_output(struct rtable **result,
 	return err;
 }
 
+/* 创建路由缓存 */
 static int ip_mkroute_output(struct rtable **rp,
 			     struct fib_result *res,
 			     const struct flowi *fl,
@@ -2477,7 +2513,10 @@ static int ip_mkroute_output(struct rtable **rp,
 /*
  * Major route resolver routine.
  */
-
+/*
+ * 查找路由表，在__ip_route_output_key()中如果找不到路由缓存，
+ * 	则调用ip_route_output_slow()查找路由表
+ */
 static int ip_route_output_slow(struct net *net, struct rtable **rp,
 				const struct flowi *oldflp)
 {
@@ -2486,11 +2525,19 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 				      { .daddr = oldflp->fl4_dst,
 					.saddr = oldflp->fl4_src,
 					.tos = tos & IPTOS_RT_MASK,
+					/* 由于TOS不需要占用整个8位，
+					 * 因此可以将flags存储到fl4_tos字段的两个最低位中，
+					 * 这样ip_route_output_slow()可以使用该flags来确定待搜索路由项的范围
+					 * RTO_ONLINK被设置时搜索范围为RT_SCOPE_LINK
+					 */
 					.scope = ((tos & RTO_ONLINK) ?
 						  RT_SCOPE_LINK :
 						  RT_SCOPE_UNIVERSE),
 				      } },
 			    .mark = oldflp->mark,
+			    /* 源设备被初始化为回环设备，
+			     * 因为ip_route_output_slow()只是路由本地生成的包
+			     */
 			    .iif = net->loopback_dev->ifindex,
 			    .oif = oldflp->oif };
 	struct fib_result res;
@@ -2505,8 +2552,10 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 	res.r		= NULL;
 #endif
 
+	/* 在源地址已知的情况下，对该源地址以及与该源地址对应网络设备进行校验 */
 	if (oldflp->fl4_src) {
 		err = -EINVAL;
+		/* 源地址不能为广播地址、组播地址、为0 */
 		if (ipv4_is_multicast(oldflp->fl4_src) ||
 		    ipv4_is_lbcast(oldflp->fl4_src) ||
 		    ipv4_is_zeronet(oldflp->fl4_src))
@@ -2520,6 +2569,10 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 		      of another iface. --ANK
 		 */
 
+		/* 如果没有设定输出网络设备，并且目的地址为组播地址或广播地址
+		 * 则根据源地址获取到的设备作为输出网络设备
+		 * 这种情况下，可以进行创建路由缓存了
+		 */
 		if (oldflp->oif == 0
 		    && (ipv4_is_multicast(oldflp->fl4_dst) ||
 			oldflp->fl4_dst == htonl(0xFFFFFFFF))) {
@@ -2558,38 +2611,46 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 	}
 
 
+	/* 在输出网络设备已知的情况下，对该网络设备进行校验，并获取源地址 */
 	if (oldflp->oif) {
+		/* 根据输出网络设备ID获取设备 */
 		dev_out = dev_get_by_index(net, oldflp->oif);
 		err = -ENODEV;
 		if (dev_out == NULL)
 			goto out;
 
 		/* RACE: Check return value of inet_select_addr instead. */
+		/* 检查该输出设备的IPV4配置块是否有效 */
 		if (__in_dev_get_rtnl(dev_out) == NULL) {
 			dev_put(dev_out);
 			goto out;	/* Wrong error code */
 		}
 
+		/* 目的地址是组播或者广播地址 */
 		if (ipv4_is_local_multicast(oldflp->fl4_dst) ||
 		    oldflp->fl4_dst == htonl(0xFFFFFFFF)) {
-			if (!fl.fl4_src)
+			if (!fl.fl4_src) /* 如果没有提供源地址则选择一个 */
 				fl.fl4_src = inet_select_addr(dev_out, 0,
 							      RT_SCOPE_LINK);
 			goto make_route;
 		}
+		/* 如果没有提供源地址, 通过inet_select_addr()选择一个源地址 */
 		if (!fl.fl4_src) {
+			/* 目的地址是组播地址 */
 			if (ipv4_is_multicast(oldflp->fl4_dst))
 				fl.fl4_src = inet_select_addr(dev_out, 0,
 							      fl.fl4_scope);
+			/* 没有提供目的地址的情况, 选择输出设备的地址作为源地址 */
 			else if (!oldflp->fl4_dst)
 				fl.fl4_src = inet_select_addr(dev_out, 0,
 							      RT_SCOPE_HOST);
 		}
 	}
 
+	/* 目的地址未知的情况下将目的地址设置为源地址 */
 	if (!fl.fl4_dst) {
 		fl.fl4_dst = fl.fl4_src;
-		if (!fl.fl4_dst)
+		if (!fl.fl4_dst) /* 如果源地址目的地址都未知，则设置为本地环回 */
 			fl.fl4_dst = fl.fl4_src = htonl(INADDR_LOOPBACK);
 		if (dev_out)
 			dev_put(dev_out);
@@ -2601,9 +2662,16 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 		goto make_route;
 	}
 
-	if (fib_lookup(net, &fl, &res)) {
+	/* 查找路由表 */
+	if (fib_lookup(net, &fl, &res)) { /* 查找路由表失败 */
 		res.fi = NULL;
 		if (oldflp->oif) {
+			/* 虽然查找路由表失败，但是由于指定了输出设备ID
+			 * 这种情况下，即使查找路由表失败，但确认目的地址是有效的
+			 * 因为当指定了输出网络设备ID，查找路由的目的只是确认目的地址是否经过网关还是直连的
+			 * 这里可能是直连的目的地址
+			 */
+
 			/* Apparently, routing tables are wrong. Assume,
 			   that the destination is on link.
 
@@ -2622,7 +2690,7 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 			   likely IPv6, but we do not.
 			 */
 
-			if (fl.fl4_src == 0)
+			if (fl.fl4_src == 0) /* 如果没指定源地址，则使用输出设备的地址 */
 				fl.fl4_src = inet_select_addr(dev_out, 0,
 							      RT_SCOPE_LINK);
 			res.type = RTN_UNICAST;
@@ -2635,7 +2703,7 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 	}
 	free_res = 1;
 
-	if (res.type == RTN_LOCAL) {
+	if (res.type == RTN_LOCAL) { /* 查找的路由是发给本机 */
 		if (!fl.fl4_src)
 			fl.fl4_src = fl.fl4_dst;
 		if (dev_out)
@@ -2651,10 +2719,14 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 	}
 
 #ifdef CONFIG_IP_ROUTE_MULTIPATH
+	/* 启用多路径路由时选择路由 */
 	if (res.fi->fib_nhs > 1 && fl.oif == 0)
 		fib_select_multipath(&fl, &res);
 	else
 #endif
+	/* 当路由查找返回的路由是默认路由时，需要选择使用的默认网关
+	 * res.prefixlen表示路由的掩码长度，为0表示默认路由
+	 */
 	if (!res.prefixlen && res.type == RTN_UNICAST && !fl.oif)
 		fib_select_default(net, &fl, &res);
 
@@ -2669,6 +2741,7 @@ static int ip_route_output_slow(struct net *net, struct rtable **rp,
 
 
 make_route:
+	/* 创建路由缓存 */
 	err = ip_mkroute_output(rp, &res, &fl, oldflp, dev_out, flags);
 
 
@@ -2679,6 +2752,9 @@ make_route:
 out:	return err;
 }
 
+/*
+ * 先查找路由缓存，如果找不到则调用ip_route_output_slow()查找路由表
+ */
 int __ip_route_output_key(struct net *net, struct rtable **rp,
 			  const struct flowi *flp)
 {

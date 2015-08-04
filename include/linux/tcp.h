@@ -381,6 +381,7 @@ struct tcp_sock {
 	struct sk_buff *retransmit_skb_hint; 	/* 表示将要重传的起始包 */
 
 	struct sk_buff_head	out_of_order_queue; /* Out of order segments go here */
+						/* 乱序队列，暂时存储乱序的skb */
 
 	/* SACKs data, these 2 need to be together (see tcp_build_and_update_options) */
 	struct tcp_sack_block duplicate_sack[1]; /* D-SACK block */

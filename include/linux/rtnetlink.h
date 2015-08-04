@@ -238,11 +238,11 @@ enum
 
 enum rt_scope_t
 {
-	RT_SCOPE_UNIVERSE=0,
+	RT_SCOPE_UNIVERSE=0,	/* IP地址可以在任何地方使用 */
 /* User defined values  */
 	RT_SCOPE_SITE=200,
-	RT_SCOPE_LINK=253,
-	RT_SCOPE_HOST=254,
+	RT_SCOPE_LINK=253,	/* IP地址只在一个局域网内使用 */
+	RT_SCOPE_HOST=254,	/* IP地址只用于主机内部通信 */
 	RT_SCOPE_NOWHERE=255
 };
 
@@ -261,8 +261,8 @@ enum rt_class_t
 /* User defined values */
 	RT_TABLE_COMPAT=252,
 	RT_TABLE_DEFAULT=253,
-	RT_TABLE_MAIN=254,
-	RT_TABLE_LOCAL=255,
+	RT_TABLE_MAIN=254,	/* 存储其它主机的路由表项,路由器使用 */
+	RT_TABLE_LOCAL=255,	/* 存储本地的路由表项 */
 	RT_TABLE_MAX=0xFFFFFFFF
 };
 
@@ -363,7 +363,7 @@ enum
 #define RTAX_RTTVAR RTAX_RTTVAR
 	RTAX_SSTHRESH,
 #define RTAX_SSTHRESH RTAX_SSTHRESH
-	RTAX_CWND,
+	RTAX_CWND, /* 用来保存tp->snd_cwnd_clamp  */
 #define RTAX_CWND RTAX_CWND
 	RTAX_ADVMSS,
 #define RTAX_ADVMSS RTAX_ADVMSS
@@ -371,7 +371,7 @@ enum
 #define RTAX_REORDERING RTAX_REORDERING
 	RTAX_HOPLIMIT,
 #define RTAX_HOPLIMIT RTAX_HOPLIMIT
-	RTAX_INITCWND,
+	RTAX_INITCWND, /*  保存拥塞窗口 */
 #define RTAX_INITCWND RTAX_INITCWND
 	RTAX_FEATURES,
 #define RTAX_FEATURES RTAX_FEATURES

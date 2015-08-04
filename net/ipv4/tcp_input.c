@@ -762,7 +762,7 @@ void tcp_update_metrics(struct sock *sk)
 		int m;
 		unsigned long rtt;
 
-		if (icsk->icsk_backoff || !tp->srtt) {
+		if (icsk->icsk_backoff || !tp->srtt) { /* 处于RTO或者RTT为0时不保存 */
 			/* This session failed to estimate rtt. Why?
 			 * Probably, no packets returned in time.
 			 * Reset our results.
@@ -772,20 +772,24 @@ void tcp_update_metrics(struct sock *sk)
 			return;
 		}
 
-		rtt = dst_metric_rtt(dst, RTAX_RTT);
+		rtt = dst_metric_rtt(dst, RTAX_RTT); /* 获取路由缓存的rtt */
 		m = rtt - tp->srtt;
 
 		/* If newly calculated rtt larger than stored one,
 		 * store new one. Otherwise, use EWMA. Remember,
 		 * rtt overestimation is always better than underestimation.
 		 */
+		/* 保存RTT */
 		if (!(dst_metric_locked(dst, RTAX_RTT))) {
-			if (m <= 0)
+			if (m <= 0) /* 如果当前RTT比路由缓存保存的大，则保存当前RTT */
 				set_dst_metric_rtt(dst, RTAX_RTT, tp->srtt);
-			else
+			else /* 如果RTT变小了，则保存为(路由缓存中的RTT-差值/8) 
+			      * 因为就如上面注释所说，高估的RTT总比低估好
+			      */
 				set_dst_metric_rtt(dst, RTAX_RTT, rtt - (m >> 3));
 		}
 
+		/* 保存mdev */
 		if (!(dst_metric_locked(dst, RTAX_RTTVAR))) {
 			unsigned long var;
 			if (m < 0)
@@ -805,35 +809,43 @@ void tcp_update_metrics(struct sock *sk)
 			set_dst_metric_rtt(dst, RTAX_RTTVAR, var);
 		}
 
-		if (tcp_in_initial_slowstart(tp)) {
+		/* 注意保存RTAX_CWND是用来设置snd_cwnd_clamp的,并不是设置拥塞窗口 */
+		if (tcp_in_initial_slowstart(tp)) { /* 一直处于慢启动 */
 			/* Slow start still did not finish. */
+			/* 如果cwnd的一半大于慢启动阈值，则慢启动阈值保存为cwnd的一半 */
 			if (dst_metric(dst, RTAX_SSTHRESH) &&
 			    !dst_metric_locked(dst, RTAX_SSTHRESH) &&
 			    (tp->snd_cwnd >> 1) > dst_metric(dst, RTAX_SSTHRESH))
 				dst->metrics[RTAX_SSTHRESH-1] = tp->snd_cwnd >> 1;
+			/* 保存较大的cwnd */
 			if (!dst_metric_locked(dst, RTAX_CWND) &&
 			    tp->snd_cwnd > dst_metric(dst, RTAX_CWND))
 				dst->metrics[RTAX_CWND - 1] = tp->snd_cwnd;
 		} else if (tp->snd_cwnd > tp->snd_ssthresh &&
-			   icsk->icsk_ca_state == TCP_CA_Open) {
+			   icsk->icsk_ca_state == TCP_CA_Open) { /* 拥塞避免阶段并且处于OPEN状态 */
 			/* Cong. avoidance phase, cwnd is reliable. */
+			/* 慢启动阈值保存为 慢启动阈值和cwnd/2之间的大者 */
 			if (!dst_metric_locked(dst, RTAX_SSTHRESH))
 				dst->metrics[RTAX_SSTHRESH-1] =
 					max(tp->snd_cwnd >> 1, tp->snd_ssthresh);
+			/* cwnd保存为 路由缓存中的cwnd和当前cwnd的平均值 */
 			if (!dst_metric_locked(dst, RTAX_CWND))
 				dst->metrics[RTAX_CWND-1] = (dst_metric(dst, RTAX_CWND) + tp->snd_cwnd) >> 1;
-		} else {
+		} else { /* 可能处于慢启动也可能是非open态 */
 			/* Else slow start did not finish, cwnd is non-sense,
 			   ssthresh may be also invalid.
 			 */
+			/* cwnd保存为 路由缓存中的cwnd和当前慢启动阈值的平均值 */
 			if (!dst_metric_locked(dst, RTAX_CWND))
 				dst->metrics[RTAX_CWND-1] = (dst_metric(dst, RTAX_CWND) + tp->snd_ssthresh) >> 1;
+			/* 慢启动阈值保存为 当前阈值和路由中的大者 */
 			if (dst_metric(dst, RTAX_SSTHRESH) &&
 			    !dst_metric_locked(dst, RTAX_SSTHRESH) &&
 			    tp->snd_ssthresh > dst_metric(dst, RTAX_SSTHRESH))
 				dst->metrics[RTAX_SSTHRESH-1] = tp->snd_ssthresh;
 		}
 
+		/* 保存reordering, 仅在reordering变大时且不等于默认值才保存 */
 		if (!dst_metric_locked(dst, RTAX_REORDERING)) {
 			if (dst_metric(dst, RTAX_REORDERING) < tp->reordering &&
 			    tp->reordering != sysctl_tcp_reordering)
@@ -922,12 +934,14 @@ static void tcp_init_metrics(struct sock *sk)
 		 */
 		tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
 	}
+	/* 如果有保存reordering，则通知也关掉fack */
 	if (dst_metric(dst, RTAX_REORDERING) &&
 	    tp->reordering != dst_metric(dst, RTAX_REORDERING)) {
 		tcp_disable_fack(tp);
 		tp->reordering = dst_metric(dst, RTAX_REORDERING);
 	}
 
+	/* 如果没保存RTT,或此时RTT为0(无法从syn-ack和ack的时间来计算RTT，即syn-ack重传过), 则不从路由缓存中读取RTT */
 	if (dst_metric(dst, RTAX_RTT) == 0 || tp->srtt == 0)
 		goto reset;
 
@@ -945,7 +959,7 @@ static void tcp_init_metrics(struct sock *sk)
 	 * to low value, and then abruptly stops to do it and starts to delay
 	 * ACKs, wait for troubles.
 	 */
-	if (dst_metric_rtt(dst, RTAX_RTT) > tp->srtt) {
+	if (dst_metric_rtt(dst, RTAX_RTT) > tp->srtt) { /* RTT设置为大者 */
 		tp->srtt = dst_metric_rtt(dst, RTAX_RTT);
 		tp->rtt_seq = tp->snd_nxt;
 	}
@@ -970,7 +984,7 @@ reset:
 	 * initRTO, we only reset cwnd when more than 1 SYN/SYN-ACK
 	 * retransmission has occurred.
 	 */
-	if (tp->total_retrans > 1)
+	if (tp->total_retrans > 1) /* syn-ack重传过不止一次，则cwnd设置为1 */
 		tp->snd_cwnd = 1;
 	else
 		tp->snd_cwnd = tcp_init_cwnd(tp, dst);
@@ -1113,9 +1127,7 @@ static void tcp_skb_mark_lost_uncond_verify(struct tcp_sock *tp,
  * fact that though start_seq (s) is before end_seq (i.e., not reversed),
  * there's no guarantee that it will be before snd_nxt (n). The problem
  * happens when start_seq resides between end_seq wrap (e_w) and snd_nxt
- * wrap (s_w):
- *
- *                                   <- wrapzone ->
+ * wrap (s_w): U
  *         u     e      n                         u_w   e_w  s n_w
  *         |     |      |                          |     |   |  |
  * |<------------+------+----- TCP seqno space --------------+---------->|
