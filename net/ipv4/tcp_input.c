@@ -107,7 +107,7 @@ int sysctl_tcp_abc __read_mostly;
 #define FLAG_SND_UNA_ADVANCED	0x400 /* Snd_una was changed (!= FLAG_DATA_ACKED) *//* snd_una被改变了。也就是更新了 */
 #define FLAG_DSACKING_ACK	0x800 /* SACK blocks contained D-SACK info *//* 包含D-sack */
 #define FLAG_NONHEAD_RETRANS_ACKED	0x1000 /* Non-head rexmitted data was ACKed */
-#define FLAG_SACK_RENEGING	0x2000 /* snd_una advanced to a sacked seq */
+#define FLAG_SACK_RENEGING	0x2000 /* snd_una advanced to a sacked seq *//* 虚假SACCK标志，会进入LOSS状态 */
 
 #define FLAG_ACKED		(FLAG_DATA_ACKED|FLAG_SYN_ACKED)
 #define FLAG_NOT_DUP		(FLAG_DATA|FLAG_WIN_UPDATE|FLAG_ACKED)
@@ -905,6 +905,7 @@ static void tcp_disable_fack(struct tcp_sock *tp)
 }
 
 /* Take a notice that peer is sending D-SACKs */
+/* 设置对端支持D-SACK */
 static void tcp_dsack_seen(struct tcp_sock *tp)
 {
 	tp->rx_opt.sack_ok |= 4;
@@ -1167,22 +1168,22 @@ static int tcp_is_sackblock_valid(struct tcp_sock *tp, int is_dsack,
 	/* In outstanding window? ...This is valid exit for D-SACKs too.
 	 * start_seq == snd_una is non-sensical (see comments above)
 	 */
-	if (after(start_seq, tp->snd_una)) /* 起始在nua之后，有效, 这里可能是SACK，也可能是D-SACK段 */
+	if (after(start_seq, tp->snd_una)) /* 起始在una之后，有效, 这里可能是SACK，也可能是D-SACK段 */
 		return 1;
 
 	if (!is_dsack || !tp->undo_marker) /* 到了这里必须为D-SACK */
 		return 0;
 
 	/* ...Then it's D-SACK, and must reside below snd_una completely */
-	if (after(end_seq, tp->snd_una)) /* 因为前面刚刚已经检查start_seq在nua之后的情况，
+	if (after(end_seq, tp->snd_una)) /* 因为前面刚刚已经检查start_seq在una之后的情况，
 					  * 所以到这里说明D-SACK段只能在una之前，即D-SACK的尾部也应该在新的nua之前 */
 		return 0;
 
-	if (!before(start_seq, tp->undo_marker)) /* 如果start_seq在之前nua之后，则是合法的 */
+	if (!before(start_seq, tp->undo_marker)) /* 如果start_seq在之前una之后，则是合法的 */
 		return 1;
 
 	/* Too old */
-	if (!after(end_seq, tp->undo_marker)) /* 果end_seq在之前nua之前，所以太旧了，不合法 */
+	if (!after(end_seq, tp->undo_marker)) /* 果end_seq在之前una之前，所以太旧了，不合法 */
 		return 0;
 
 	/* Undo_marker boundary crossing (overestimates a lot). Known already:
@@ -1261,6 +1262,11 @@ static void tcp_mark_lost_retrans(struct sock *sk)
 		tp->lost_retrans_low = new_low_seq;
 }
 
+/*
+ * 根据RFC 2883, 判断D-SACK有两种方法：
+ * 	1. 第一个SACK块小于已确认序列号，说明是D-SACK
+ * 	2. 第一个SACK块大于已确认序列号，且第一个SACK块包含在第二个SACK块中，则说明是D-SACK
+ */
 static int tcp_check_dsack(struct sock *sk, struct sk_buff *ack_skb,
 			   struct tcp_sack_block_wire *sp, int num_sacks,
 			   u32 prior_snd_una)
@@ -1368,11 +1374,12 @@ static u8 tcp_sacktag_one(struct sk_buff *skb, struct sock *sk,
 	int fack_count = state->fack_count;
 
 	/* Account D-SACK for retransmitted packet. */
-	if (dup_sack && (sacked & TCPCB_RETRANS)) {
+	if (dup_sack && (sacked & TCPCB_RETRANS)) { /* 如果是D-SACK, 并且该skb有重传过 */
+		/* 如果D-SACK（重复重传）标记的重传是在进入快速恢复之后，则更新用来撤销窗口的undo_retrans变量 */
 		if (tp->undo_marker && tp->undo_retrans &&
 		    after(TCP_SKB_CB(skb)->end_seq, tp->undo_marker))
 			tp->undo_retrans--;
-		if (sacked & TCPCB_SACKED_ACKED)
+		if (sacked & TCPCB_SACKED_ACKED) /* 该skb已经被sack过, 则更新乱序长度 */
 			state->reord = min(fack_count, state->reord);
 	}
 
@@ -1838,7 +1845,7 @@ tcp_sacktag_write_queue(struct sock *sk, struct sk_buff *ack_skb,
 		goto out;
 
 	used_sacks = 0; 	/* 用于记录合法的SACK段数 */
-	first_sack_index = 0; 	/* 第一个合法SACK段的下标 */
+	first_sack_index = 0; 	/* 第一个合法SACK段的下标（因为后面会进行冒泡排序） */
 
 	/* 进行SACK块的合法性检查，并确定要使用哪些SACK块 */
 	for (i = 0; i < num_sacks; i++) {
@@ -2392,6 +2399,7 @@ void tcp_enter_loss(struct sock *sk, int how)
 static int tcp_check_sack_reneging(struct sock *sk, int flag)
 {
 	/* 检查是否为虚假的SACK，即ACK是否确认已经被SACK的数据. */
+	/* 如果此时UNA对应的skb已经被SACK了，则认为出错了，进入LOSS状态 */
 	if (flag & FLAG_SACK_RENEGING) {
 		struct inet_connection_sock *icsk = inet_csk(sk);
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPSACKRENEGING);
@@ -2753,6 +2761,7 @@ static inline u32 tcp_cwnd_min(const struct sock *sk)
 }
 
 /* Decrease cwnd each second ack. */
+/* CWR状态减少拥塞窗口：每收到两个数据段的ACK拥塞窗口减一 */
 static void tcp_cwnd_down(struct sock *sk, int flag)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2774,6 +2783,7 @@ static void tcp_cwnd_down(struct sock *sk, int flag)
 /* Nothing was retransmitted or returned timestamp is less
  * than timestamp of the first retransmission.
  */
+/* 没有重传或者接收的时候早于第一次重传的时间 */
 static inline int tcp_packet_delayed(struct tcp_sock *tp)
 {
 	return !tp->retrans_stamp ||
@@ -2840,6 +2850,7 @@ static void tcp_undo_cwr(struct sock *sk, const bool undo_ssthresh)
 
 static inline int tcp_may_undo(struct tcp_sock *tp)
 {
+	/* 重传过数据包都被D-SACK确认，说明都是不必要的重传，则可以撤销 */
 	return tp->undo_marker && (!tp->undo_retrans || tcp_packet_delayed(tp));
 }
 
@@ -2848,14 +2859,14 @@ static int tcp_try_undo_recovery(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (tcp_may_undo(tp)) { /* 如果可以撤销"缩小拥塞窗口"，则恢复拥塞窗口和满启动阈值 */
+	if (tcp_may_undo(tp)) { /* 如果可以撤销"缩小拥塞窗口"，则恢复拥塞窗口和慢启动阈值 */
 		int mib_idx;
 
 		/* Happy end! We did not retransmit anything
 		 * or our original transmission succeeded.
 		 */
 		DBGUNDO(sk, inet_csk(sk)->icsk_ca_state == TCP_CA_Loss ? "loss" : "retrans");
-		tcp_undo_cwr(sk, true);
+		tcp_undo_cwr(sk, true); /* 撤销拥塞窗口和慢启动阈值 */
 		if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss)
 			mib_idx = LINUX_MIB_TCPLOSSUNDO;
 		else
@@ -2953,7 +2964,7 @@ static inline void tcp_complete_cwr(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Do not moderate cwnd if it's already undone in cwr or recovery. */
-	if (tp->undo_marker) {
+	if (tp->undo_marker) { /* 前面如果撤销了就不用调整了 */
 		if (inet_csk(sk)->icsk_ca_state == TCP_CA_CWR)
 			tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_ssthresh);
 		else /* PRR */
@@ -3141,8 +3152,8 @@ static void tcp_update_cwnd_in_recovery(struct sock *sk, int newly_acked_sacked,
 static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 				  int newly_acked_sacked, bool is_dupack,
 				  int flag)
-/* pkts_acked为包含sack的ack的段数，即包含sack中的段
- * newly_acked_sacked为不包含sack的ack段数, 即扣去sack中ack的段数
+/* pkts_acked为本次ACK una确认的总段数，包含之前被SACK的个数(即本次ACK使una前进的段数)
+ * newly_acked_sacked为本次ACK新确认的段数，包括新ACK的和新SACK的段数
  * is_dupack 是否为重复ack
  */
 {
@@ -3170,7 +3181,9 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 		tp->prior_ssthresh = 0;
 
 	/* B. In all the states check for reneging SACKs. */
-	/* 检查是否为虚假的SACK，即ACK是否确认已经被SACK的数据. */
+	/* 检查是否为虚假的SACK，即ACK是否确认已经被SACK的数据.
+	 * 如果此时UNA对应的skb已经被SACK了，则认为出错了，进入LOSS状态
+	 */
 	if (tcp_check_sack_reneging(sk, flag))
 		return;
 
@@ -3261,7 +3274,7 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 			return;
 		/* Loss is undone; fall through to processing in Open state. */
 	default:
-		/* 进入下面则有可能是　disorder, open, cwr, loss 这几个状态 */
+		/* 进入下面则有可能是　disorder, open, cwr 这几个状态 */
 
 		/* 如果SACK关闭，那么就需要模拟SACK */
 		if (tcp_is_reno(tp)) {
@@ -3570,6 +3583,12 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 			int delta;
 
 			/* Non-retransmitted hole got filled? That's reordering */
+			/* reord为本次被确认的（并且没有被sack和重传过的)第一个数据段相对之前una的偏移的段个数，
+			 * prior_fackets为之前的facket_out，
+			 * 前者小于后者的话表示先收到了后面的数据段（SACK最高的那个数据包），
+			 * 然后才收到了前面的数据包（新确认的并且没有被SACK和重传过的），
+			 * 说明出现乱序, tp->fackets_out - reord 相减的含义是乱序的长度
+			 */
 			if (reord < prior_fackets)
 				tcp_update_reordering(sk, tp->fackets_out - reord, 0);
 
@@ -3648,6 +3667,7 @@ static void tcp_ack_probe(struct sock *sk)
 /* 检查ACK是否可疑 */
 static inline int tcp_ack_is_dubious(const struct sock *sk, const int flag)
 {
+	/* 重复的ACK 或 SACK 或 ECE标志 或 不是OPEN状态 */
 	return (!(flag & FLAG_NOT_DUP) || (flag & FLAG_CA_ALERT) ||
 		inet_csk(sk)->icsk_ca_state != TCP_CA_Open);
 }
@@ -3958,9 +3978,9 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 	/* 清理重传队列中的已经ack的数据段, 并且更新RTT和RTO */
 	flag |= tcp_clean_rtx_queue(sk, prior_fackets, prior_snd_una);
 
-	/* pkts_acked为这次ack的个数, 包括了之前sack */
+	/* pkts_acked为本次ACK una确认的总段数，包含之前被SACK的个数(即本次ACK使una前进的段数) */
 	pkts_acked = prior_packets - tp->packets_out;
-	/* newly_acked_sacked为这次ack的个数，不包括之前sack中的 */
+ 	/* newly_acked_sacked为本次ACK新确认的段数，包括新ACK的和新SACK的段数 */
 	newly_acked_sacked = (prior_packets - prior_sacked) -
 			     (tp->packets_out - tp->sacked_out);
 
@@ -3980,7 +4000,8 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 			tcp_cong_avoid(sk, ack, prior_in_flight); /* 增大拥塞窗口 */
 
 		/* 判断是否是重复的ACK
-		 * FLAG_SND_UNA_ADVANCED表示Snd_una被改变，也就是当前的ack不是一个重复ack。而FLAG_NOT_DUP也表示不是重复ack 
+		 * FLAG_SND_UNA_ADVANCED表示Snd_una被改变，也就是当前的ack不是一个重复ack。
+		 * 而FLAG_NOT_DUP也表示不是重复ack 
 		 */
 		is_dupack = !(flag & (FLAG_SND_UNA_ADVANCED | FLAG_NOT_DUP)); /* 重复ACK */
 
@@ -4000,7 +4021,7 @@ static int tcp_ack(struct sock *sk, struct sk_buff *skb, int flag)
 
 no_queue:
 	/* If data was DSACKed, see if we can undo a cwnd reduction. */
-	if (flag & FLAG_DSACKING_ACK)
+	if (flag & FLAG_DSACKING_ACK) /* 如果是D-SACK，则试试能否拥塞撤销 */
 		tcp_fastretrans_alert(sk, pkts_acked, newly_acked_sacked,
 				      is_dupack, flag);
 	/* If this ack opens up a zero window, clear backoff.  It was

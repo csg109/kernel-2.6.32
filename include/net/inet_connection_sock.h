@@ -100,7 +100,7 @@ struct inet_connection_sock {
 	const struct inet_connection_sock_af_ops *icsk_af_ops;  /* 为ipv4_specific */
 	unsigned int		  (*icsk_sync_mss)(struct sock *sk, u32 pmtu);
 	__u8			  icsk_ca_state;	 	/* 拥塞状态，用枚举tcp_ca_state定义 */
-	__u8			  icsk_retransmits;
+	__u8			  icsk_retransmits;		/* 连续RTO的次数 */
 	__u8			  icsk_pending;			/* 等待的定时器事件 */
 	__u8			  icsk_backoff;			/* 指数退避 */
 	__u8			  icsk_syn_retries;

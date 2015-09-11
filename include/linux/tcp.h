@@ -402,6 +402,7 @@ struct tcp_sock {
 	u32	lost_retrans_low;	/* Sent seq after any rxmit (lowest) */
 					/* 记录第一个重传包的snd_nxt, 即重传包对应的最小snd_nxt */
 
+	/* 记录进入快速恢复的慢启动阈值，用于撤销窗口 */
 	u32	prior_ssthresh; /* ssthresh saved at recovery start	*/
 	/* 记录发生拥塞时的SND.NXT,标识重传队列的尾部 */
 	u32	high_seq;	/* snd_nxt at onset of congestion	*//* 记录拥塞发生时的snd_nxt */
@@ -415,7 +416,12 @@ struct tcp_sock {
 	 * 它是检测是否可以进行拥塞撤销的条件之一，一般在完成拥塞撤销操作或进入Loss状态后清零
 	 */
 	u32	undo_marker;	/* tracking retrans started here. */
-	/* 在恢复拥塞控制之前可进行撤销的重传段数。 */
+	/* 用于判断能否进行拥塞撤销的变量,
+	 * 重传数据包的时候会增加该值
+	 * 在收到D-SACK时(判断为不必要的重传)会减少该值 
+	 * 如果该值为0说明重传的数据包都被D-SACK了，即都是不必要的重传，
+	 * 则可以撤销对拥塞窗口的调整
+	 */
 	int	undo_retrans;	/* number of undoable retransmissions. */
 	u32	total_retrans;	/* Total retransmits for entire connection */
 

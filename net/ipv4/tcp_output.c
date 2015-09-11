@@ -1833,8 +1833,8 @@ u32 __tcp_select_window(struct sock *sk)
 	 * fluctuations.  --SAW  1998/11/1
 	 */
 	int mss = icsk->icsk_ack.rcv_mss;
-	int free_space = tcp_space(sk);
-	int full_space = min_t(int, tp->window_clamp, tcp_full_space(sk));
+	int free_space = tcp_space(sk); /* 剩余接收缓存大小 */
+	int full_space = min_t(int, tp->window_clamp, tcp_full_space(sk)); /* 总的接收缓存大小 */
 	int window;
 
 	if (mss > full_space)
@@ -2038,7 +2038,7 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	    && TCP_SKB_CB(skb)->seq != tp->snd_una)
 		return -EAGAIN;
 
-	if (skb->len > cur_mss) { /* 大于MSS为何要先分片？不太理解 */
+	if (skb->len > cur_mss) { /* 重传时大于MSS要先分片 */
 		if (tcp_fragment(sk, skb, cur_mss, cur_mss))
 			return -ENOMEM; /* We'll try again later. */
 	} else {
