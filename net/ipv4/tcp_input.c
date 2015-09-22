@@ -103,10 +103,10 @@ int sysctl_tcp_abc __read_mostly;
 #define FLAG_ECE		0x40 /* ECE in this ACK				*//* ack中包含ECE */
 #define FLAG_DATA_LOST		0x80 /* SACK detected data lossage.		*//* sack检测到了数据丢失 */
 #define FLAG_SLOWPATH		0x100 /* Do not skip RFC checks for window update.*//* 当更新窗口的时候不跳过RFC的检测 */
-#define FLAG_ONLY_ORIG_SACKED	0x200 /* SACKs only non-rexmit sent before RTO */
+#define FLAG_ONLY_ORIG_SACKED	0x200 /* SACKs only non-rexmit sent before RTO *//* 这个ACK SACK了进入FRTO时nxt之前的没有被重传过的数据 */
 #define FLAG_SND_UNA_ADVANCED	0x400 /* Snd_una was changed (!= FLAG_DATA_ACKED) *//* snd_una被改变了。也就是更新了 */
 #define FLAG_DSACKING_ACK	0x800 /* SACK blocks contained D-SACK info *//* 包含D-sack */
-#define FLAG_NONHEAD_RETRANS_ACKED	0x1000 /* Non-head rexmitted data was ACKed */
+#define FLAG_NONHEAD_RETRANS_ACKED	0x1000 /* Non-head rexmitted data was ACKed *//* ACK确认了不止一个段且其中包含被重传过的 */
 #define FLAG_SACK_RENEGING	0x2000 /* snd_una advanced to a sacked seq *//* 虚假SACCK标志，会进入LOSS状态 */
 
 #define FLAG_ACKED		(FLAG_DATA_ACKED|FLAG_SYN_ACKED)
@@ -2135,16 +2135,24 @@ int tcp_use_frto(struct sock *sk)
 	if (icsk->icsk_mtup.probe_size)
 		return 0;
 
-	if (tcp_is_sackfrto(tp))
+	/* sysctl_tcp_frto为2(表示直接用FRTO)并且启用SACK时，使用FRTO */
+	if (tcp_is_sackfrto(tp)) 
 		return 1;
 
 	/* Avoid expensive walking of rexmit queue if possible */
 	if (tp->retrans_out > 1) /* 不能重过传除了head以外的数据 */
 		return 0;
 
+	/* 如果触发RTO的是重传队列的最后一个数据包，即此时重传队列就一个数据包，那么也使用FRTO */
 	skb = tcp_write_queue_head(sk);
 	if (tcp_skb_is_last(sk, skb))
 		return 1;
+
+	/* 以下：
+	 * 如果除了触发RTO的数据包外，在第一个被SACK的数据之前还存在其他被重传过的数据包，那么不使用FRTO
+	 * (这种情况说明不只是第一个数据包丢失，可能有多个数据包丢失，那么直接进入RTO)
+	 * 否则使用F-RTO
+	 * */
 	skb = tcp_write_queue_next(sk, skb);	/* Skips head */
 	tcp_for_write_queue_from(skb, sk) {
 		if (skb == tcp_send_head(sk))
@@ -2176,6 +2184,13 @@ void tcp_enter_frto(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 
+	/* 以下条件表明需要调整慢启动阈值：
+	 * 1. 从OPEN或DISORDER状态第一次触发的RTO(如果是其他状态触发的，那么在之前进入该状态时就已经调整过)
+	 * 2. snd_una == high_seq: 表明之前刚从其他状态恢复，然后触发了RTO
+	 * 3. 之前就已经是LOSS状态或者F-RTO已经触发过 并且 在之前的状态下确认过数据(icsk_retransmits为0)
+	 *
+	 * 条件1是第一次调整慢启动阈值，条件2、3是认为其他状态下再次触发RTO，所以需要再次调整慢启动阈值
+	 */ 
 	if ((!tp->frto_counter && icsk->icsk_ca_state <= TCP_CA_Disorder) ||
 	    tp->snd_una == tp->high_seq ||
 	    ((icsk->icsk_ca_state == TCP_CA_Loss || tp->frto_counter) &&
@@ -2191,6 +2206,7 @@ void tcp_enter_frto(struct sock *sk)
 		 * due to back-off and complexity of triggering events ...
 		 */
 		if (tp->frto_counter) {
+			/* 不是第一次触发，所以设置慢启动阈值时需要把snd_cwnd先减小计算后再恢复 */
 			u32 stored_cwnd;
 			stored_cwnd = tp->snd_cwnd;
 			tp->snd_cwnd = 2;
@@ -2209,9 +2225,11 @@ void tcp_enter_frto(struct sock *sk)
 		tcp_ca_event(sk, CA_EVENT_FRTO); /*  触发FRTO事件 */
 	}
 
+	/* 设置拥塞撤销成员 */
 	tp->undo_marker = tp->snd_una;
 	tp->undo_retrans = 0;
 
+	/* 如果第一个数据包被重传过再进入的RTO，则说明丢包，不进行拥塞撤销 */
 	skb = tcp_write_queue_head(sk);
 	if (TCP_SKB_CB(skb)->sacked & TCPCB_RETRANS)
 		tp->undo_marker = 0;
@@ -2552,7 +2570,7 @@ static int tcp_time_to_recover(struct sock *sk)
 	__u32 packets_out;
 
 	/* Do not perform any recovery during F-RTO algorithm */
-	/* 这说明Recovery状态不能打断Loss状态 */
+	/* 这说明Recovery状态不能打断FRTO状态 */
 	if (tp->frto_counter)
 		return 0;
 
@@ -3802,13 +3820,20 @@ static int tcp_process_frto(struct sock *sk, int flag)
 	tcp_verify_left_out(tp);
 
 	/* Duplicate the behavior from Loss state (fastretrans_alert) */
+	/* 如果ACK使得una前进，则RTO的重传技术清零 */
 	if (flag & FLAG_DATA_ACKED)
 		inet_csk(sk)->icsk_retransmits = 0;
 
+	/* 如果ACK确认的段中包含原来重传过的，则不需要进行拥塞撤销了 */
 	if ((flag & FLAG_NONHEAD_RETRANS_ACKED) ||
 	    ((tp->frto_counter >= 2) && (flag & FLAG_RETRANS_DATA_ACKED)))
 		tp->undo_marker = 0;
 
+	/* 如果收到的ACK确认了进入F-RTO时的snd.nxt，
+	 * 虽然这个ACK更新了snd.una，
+	 * 但是这也恰恰说明之前发生了丢包，
+	 * 所以这种情况会进入LOSS
+	 */
 	if (!before(tp->snd_una, tp->frto_highmark)) {
 		tcp_enter_frto_loss(sk, (tp->frto_counter == 1 ? 2 : 3), flag);
 		return 1;
@@ -3828,6 +3853,11 @@ static int tcp_process_frto(struct sock *sk, int flag)
 			return 1;
 		}
 	} else {
+		/* 第一个ACK没有更新una，则调整下拥塞窗口，目的是不让发送新数据,
+		 * 即等待第一个更新una的ACK到来才进行之后的处理.
+		 * 因为进入FRTO时已经重传过第一个数据包，
+		 * 如果该数据包又丢了则应该等到RTO的再次来临.
+		 */
 		if (!(flag & FLAG_DATA_ACKED) && (tp->frto_counter == 1)) {
 			/* Prevent sending of new data. */
 			tp->snd_cwnd = min(tp->snd_cwnd,
@@ -3835,11 +3865,25 @@ static int tcp_process_frto(struct sock *sk, int flag)
 			return 1;
 		}
 
+		/* 如果第二三个ACK
+		 * ( 
+		 *   没有确认或SACK任何数据 
+		 *   或
+		 *   新SACK了数据但不是进入FRTO之后发送的新数据
+		 * )
+		 * 并且是重复ACK，
+		 * 则进入LOSS状态
+		 */
 		if ((tp->frto_counter >= 2) &&
 		    (!(flag & FLAG_FORWARD_PROGRESS) ||
 		     ((flag & FLAG_DATA_SACKED) &&
 		      !(flag & FLAG_ONLY_ORIG_SACKED)))) {
 			/* RFC4138 shortcoming (see comment above) */
+
+			/* 这里判断表示这个ACK虽然没有向前确认数据, 
+			 * 但是并不属于重复ACK（比如是更新窗口的ACK或携带数据的ACK等）,
+			 * 那么我们不能通过这个ACK来做出判断，所以继续等待下一个ACK到来.
+			 */
 			if (!(flag & FLAG_FORWARD_PROGRESS) &&
 			    (flag & FLAG_NOT_DUP))
 				return 1;
@@ -3851,6 +3895,9 @@ static int tcp_process_frto(struct sock *sk, int flag)
 
 	if (tp->frto_counter == 1) {
 		/* tcp_may_send_now needs to see updated state */
+		/* 收到第一个ACK后，拥塞窗口增加2(目的是发送两个新的数据包),
+		 * 如果此时不能发送数据，则直接进入LOSS状态
+		 */
 		tp->snd_cwnd = tcp_packets_in_flight(tp) + 2;
 		tp->frto_counter = 2;
 
@@ -3859,18 +3906,31 @@ static int tcp_process_frto(struct sock *sk, int flag)
 
 		return 1;
 	} else {
+		/* 到了这里，说明是收到第二个ACK，并且确认了数据，判断之前的RTO为虚假RTO。
+		 * 这里虽然判断为虚假RTO，但是并不知道刚进入F-RTO重传的第一个数据包是否真的丢失，
+		 * 所以根据sysctl_tcp_frto_response参数来做出调整，该参数从0~2依次更加激进，默认为0
+		 */
 		switch (sysctl_tcp_frto_response) {
 		case 2:
+			/* 比较激进：
+			 * 如果有ECE标志则进入CWR状态，否则尝试拥塞撤销操作
+			 */
 			tcp_undo_spur_to_response(sk, flag);
 			break;
 		case 1:
+			/* 不那么保守:
+			 * 仅是调整下拥塞窗口，不进入CWR状态 
+			 */
 			tcp_conservative_spur_to_response(tp);
 			break;
 		default:
-			tcp_ratehalving_spur_to_response(sk);
+			/* 比较保守:
+			 * 直接进入CWR状态 
+			 */
+			tcp_ratehalving_spur_to_response(sk); 
 			break;
 		}
-		tp->frto_counter = 0;
+		tp->frto_counter = 0; /* 置为0，表明F-RTO处理完成了 */
 		tp->undo_marker = 0;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPSPURIOUSRTOS);
 	}
