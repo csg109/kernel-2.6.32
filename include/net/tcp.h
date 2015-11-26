@@ -1316,16 +1316,28 @@ static inline bool retransmits_timed_out(struct sock *sk,
 	if (unlikely(!tcp_sk(sk)->retrans_stamp))
 		start_ts = TCP_SKB_CB(tcp_write_queue_head(sk))->when;
 	else
-		start_ts = tcp_sk(sk)->retrans_stamp;
+		start_ts = tcp_sk(sk)->retrans_stamp; /* 本次重传开始的时间 */
 
-	linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base); /* log2(120HZ/(HZ/5)) = 9.228 */
+	/* linear_backoff_thresh = log2(120HZ/(HZ/5)) = 9.228
+	 * 表示9次RTO后RTO的时间从最小RTO增大到最大RTO
+	 */
+	linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base); 
 
+	/* 连续RTO的最大次数为n (即boundary), timeout的含义是从第一次重传开始到最大连续RTO次数最后一次RTO对应的时间，
+	 * 超过则表示RTO次数超过最大次数了，连接需要断开
+	 *
+	 * 如果n <= 9，则timeout = (2^n - 1) * 200ms 
+	 * 如果n > 9,  则timeout = (2^9 - 1) * 200ms + (n - 9) * 120S = 204.6S + (n - 9) * 120S
+	 *
+	 * 所以当RTO最大次数为默认值15(sysctl_tcp_retries2)时, timeout = 924.6S
+	 */
 	if (boundary <= linear_backoff_thresh)
 		timeout = ((2 << boundary) - 1) * rto_base;
 	else
 		timeout = ((2 << linear_backoff_thresh) - 1) * rto_base +
 			  (boundary - linear_backoff_thresh) * TCP_RTO_MAX;
 
+	/* 与上次重传的时间间隔大于timeout, 则放弃该连接 */
 	return (tcp_time_stamp - start_ts) >= timeout;
 }
 

@@ -146,6 +146,7 @@ static int tcp_write_timeout(struct sock *sk)
 		retry_until = icsk->icsk_syn_retries ? : sysctl_tcp_syn_retries;
 		syn_set = 1;
 	} else {
+		/* 超过sysctl_tcp_retries1次数后需要探测下mtu */
 		if (retransmits_timed_out(sk, sysctl_tcp_retries1, 0)) {
 			/* Black hole detection */
 			tcp_mtu_probing(icsk, sk);
@@ -166,6 +167,7 @@ static int tcp_write_timeout(struct sock *sk)
 		}
 	}
 
+	/* 超过retry_until次数则放弃该连接 */
 	if (retransmits_timed_out(sk, retry_until, syn_set)) {
 		/* Has it gone just too far? */
 		tcp_write_err(sk);
@@ -424,7 +426,8 @@ out_reset_timer:
 	}
 	/* 重启定时器，超时时间就是上面的icsk_rto */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, icsk->icsk_rto, TCP_RTO_MAX);
-	if (retransmits_timed_out(sk, sysctl_tcp_retries1 + 1, 0))
+	/* 超过sysctl_tcp_retries1+1次数重置路由缓存 */
+	if (retransmits_timed_out(sk, sysctl_tcp_retries1 + 1, 0)) 
 		__sk_dst_reset(sk);
 
 out:;

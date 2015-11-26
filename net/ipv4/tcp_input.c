@@ -1176,14 +1176,14 @@ static int tcp_is_sackblock_valid(struct tcp_sock *tp, int is_dsack,
 
 	/* ...Then it's D-SACK, and must reside below snd_una completely */
 	if (after(end_seq, tp->snd_una)) /* 因为前面刚刚已经检查start_seq在una之后的情况，
-					  * 所以到这里说明D-SACK段只能在una之前，即D-SACK的尾部也应该在新的nua之前 */
+					  * 所以到这里说明D-SACK段只能在una之前，即D-SACK的尾部也应该在新的una之前 */
 		return 0;
 
 	if (!before(start_seq, tp->undo_marker)) /* 如果start_seq在之前una之后，则是合法的 */
 		return 1;
 
 	/* Too old */
-	if (!after(end_seq, tp->undo_marker)) /* 果end_seq在之前una之前，所以太旧了，不合法 */
+	if (!after(end_seq, tp->undo_marker)) /* 如果end_seq在之前una之前，所以太旧了，不合法 */
 		return 0;
 
 	/* Undo_marker boundary crossing (overestimates a lot). Known already:
@@ -2575,7 +2575,10 @@ static int tcp_time_to_recover(struct sock *sk)
 		return 0;
 
 	/* Trick#1: The loss is proven. */
-	if (tp->lost_out) /* 如果存在丢失段，则进入rocovery状态 */
+	/* 如果存在丢失段，则进入rocovery状态
+	 * 比如刚退出快速恢复时还存在丢失包，则继续进入
+	 */
+	if (tp->lost_out) 
 		return 1;
 
 	/* Not-A-Trick#2 : Classic rule... */
@@ -3292,7 +3295,7 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 			return;
 		/* Loss is undone; fall through to processing in Open state. */
 	default:
-		/* 进入下面则有可能是　disorder, open, cwr 这几个状态 */
+		/* 进入下面则有可能是 disorder, open, cwr 这几个状态 */
 
 		/* 如果SACK关闭，那么就需要模拟SACK */
 		if (tcp_is_reno(tp)) {
@@ -3865,7 +3868,7 @@ static int tcp_process_frto(struct sock *sk, int flag)
 			return 1;
 		}
 
-		/* 如果第二三个ACK
+		/* 如果第二个ACK
 		 * ( 
 		 *   没有确认或SACK任何数据 
 		 *   或

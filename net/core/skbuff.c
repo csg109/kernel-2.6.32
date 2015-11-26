@@ -457,7 +457,7 @@ static void kfree_skbmem(struct sk_buff *skb)
 		/* The clone portion is available for
 		 * fast-cloning again.
 		 */
-		skb->fclone = SKB_FCLONE_UNAVAILABLE;
+		skb->fclone = SKB_LONE_UNAVAILABLE;
 
 		if (atomic_dec_and_test(fclone_ref))
 			kmem_cache_free(skbuff_fclone_cache, other);
