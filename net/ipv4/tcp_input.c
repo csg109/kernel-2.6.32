@@ -3132,6 +3132,16 @@ static void tcp_update_cwnd_in_recovery(struct sock *sk, int newly_acked_sacked,
 	if (tcp_packets_in_flight(tp) > tp->snd_ssthresh) {
 		/*  Main idea : sending_rate = CC_reduction_factor * data_rate_at_the_receiver， 
 		 * 按照拥塞算法得到的减小因子，按比例的减小pipe，最终使pipe收敛于snd_ssthresh。
+		 * 具体为：
+		 * 	prr_delivered表示快速恢复开始后收到确认的数据包个数(包括SACK和ACK),代表网络上减少的数据包个数
+		 * 	prr_out表示快速恢复开始后发出的数据包个数(包括新的数据和重传),代表网络上增加的数据包个数
+		 * 	prior_cwnd为进入快速恢复时的拥塞窗口
+		 *      
+		 * 	sndcnt = (snd_ssthresh / prior_cwnd) * prr_delivered - prr_out
+		 * 	       = beta * prr_delivered - prr_out
+		 * 	以上beta即拥塞算法的beta值，即cubic的0.7
+		 * 	所以，sndcnt表示按照接收数据包个数(prr_delivered)的比例(beta) 减去发送数据包个数，
+		 * 		来表示目前可以发送的数据包个数,用来控制按比例减小
 		 */
 		u64 dividend = (u64)tp->snd_ssthresh * tp->prr_delivered +
 			       tp->prior_cwnd - 1;

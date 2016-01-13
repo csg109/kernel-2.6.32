@@ -383,7 +383,9 @@ static int ip_rcv_finish(struct sk_buff *skb)
 
 	/* 最后调用skb->_skb_dst->input,而这个虚函数的的值，
 	 * 首先是在ip_route_input中赋值，然后在 ip_rcv_options也有可能被修改。
-	 * 这个虚函数要么被ip_local_deliver(也就是直接发向高层),要么是ip_forward(直接被forward).
+	 * 这个虚函数要么ip_local_deliver (也就是直接发向高层),
+	 * 要么是ip_forward(直接被forward).
+	 *
 	 */
 	return dst_input(skb);
 

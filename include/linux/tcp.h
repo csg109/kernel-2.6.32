@@ -210,14 +210,17 @@ struct tcp_options_received {
 /*	PAWS/RTTM data	*/
 	long	ts_recent_stamp;/* Time we stored ts_recent (for aging) */
 	u32	ts_recent;	/* Time stamp to echo next		*/
+				/* 最后一次收到对方的时间戳, 即rcv_tsval */
 	u32	rcv_tsval;	/* Time stamp value             	*/
-				/* 收到的时间戳值 */
+				/* 收到的时间戳值(对方的时间戳) */
 	u32	rcv_tsecr;	/* Time stamp echo reply        	*/
-				/* 收到的时间戳回显应答 */
+				/* 收到的时间戳回显应答(对方回复本方原来的时间戳) */
 	u16 	saw_tstamp : 1,	/* Saw TIMESTAMP on last packet		*/
-				/* syn包开启了时间戳 */
+				/* 最后的数据包接收到了时间戳 */
 		tstamp_ok : 1,	/* TIMESTAMP seen on SYN packet		*/
-				/* 被赋值为saw_tstamp */
+				/* 收到SYN包时被赋值为saw_tstamp, 表示syn包开启了时间戳 
+				 * 后续用来判断该连接是否启用了时间戳
+				 */
 		dsack : 1,	/* D-SACK is scheduled			*/
 		wscale_ok : 1,	/* Wscale seen on SYN packet		*/
 				/* 开启了窗口扩大因子 */

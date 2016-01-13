@@ -2867,7 +2867,9 @@ ncls:
 		    (!skb->deliver_no_wcard && ptype->dev == NULL))) {
 			if (pt_prev)
 				/* 调用packet_type.func() 
-				 * arp包会调arp_rcv(), ip包会调ip_rcv()
+				 * arp包会调arp_rcv()
+				 * ipv4包会调ip_rcv()
+				 * ipv6调用ipv6_rcv()
 				 */
 				ret = deliver_skb(skb, pt_prev, orig_dev);
 			pt_prev = ptype;

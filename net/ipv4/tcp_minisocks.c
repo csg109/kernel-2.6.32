@@ -277,14 +277,21 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	int recycle_ok = 0;
 
+	/* 如果没有时间戳选项的话，tcp_tw_recycle参数无效 */
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
 		recycle_ok = icsk->icsk_af_ops->remember_stamp(sk);
 
+	/* tcp_death_row.tw_count是当前TIME_WAIT状态套接字的数量，
+	 * tcp_death_row.sysctl_max_tw_buckets的值是系统参数tcp_max_tw_buckets的值，
+	 * 如果前者大于等于后者，则tw的值为NULL。
+	 * 如果分配内存失败，tw的值也为NULL。 
+	 */
 	if (tcp_death_row.tw_count < tcp_death_row.sysctl_max_tw_buckets)
 		tw = inet_twsk_alloc(sk, state);
 
 	if (tw != NULL) {
 		struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
+ 		/* 3.5倍的RTO, 原因是可以允许对端重传两次FIN包，0.5 + 1 + 2 （指数退避） */
 		const int rto = (icsk->icsk_rto << 2) - (icsk->icsk_rto >> 1);
 
 		tw->tw_rcv_wscale	= tp->rx_opt.rcv_wscale;
@@ -338,7 +345,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		if (recycle_ok) {
 			tw->tw_timeout = rto;
 		} else {
-			tw->tw_timeout = TCP_TIMEWAIT_LEN;
+			tw->tw_timeout = TCP_TIMEWAIT_LEN; /* 60秒的TIMEWAIT */
 			if (state == TCP_TIME_WAIT)
 				timeo = TCP_TIMEWAIT_LEN;
 		}

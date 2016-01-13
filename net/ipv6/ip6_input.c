@@ -205,7 +205,7 @@ resubmit:
 		    !xfrm6_policy_check(NULL, XFRM_POLICY_IN, skb))
 			goto discard;
 
-		ret = ipprot->handler(skb);
+		ret = ipprot->handler(skb); /* ¼´tcp_v6_rcv */
 		if (ret > 0)
 			goto resubmit;
 		else if (ret == 0)
