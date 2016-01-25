@@ -1482,7 +1482,7 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 
 		err = security_socket_listen(sock, backlog);
 		if (!err)
-			err = sock->ops->listen(sock, backlog);
+			err = sock->ops->listen(sock, backlog); /* ¼´inet_listen() */
 
 		fput_light(sock->file, fput_needed);
 	}

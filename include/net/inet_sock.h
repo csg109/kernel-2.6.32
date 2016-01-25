@@ -101,21 +101,21 @@ struct inet_request_sock {
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	u16			inet6_rsk_offset;
 #endif
-	__be16			loc_port;
-	__be32			loc_addr;
-	__be32			rmt_addr;
-	__be16			rmt_port;
+	__be16			loc_port; 	/* 本地端口 */
+	__be32			loc_addr;	/* 本地IP */
+	__be32			rmt_addr;	/* 客户端IP */
+	__be16			rmt_port;	/* 客户端地址 */
 	kmemcheck_bitfield_begin(flags);
-	u16			snd_wscale : 4,
-				rcv_wscale : 4,
-				tstamp_ok  : 1,
-				sack_ok	   : 1,
-				wscale_ok  : 1,
-				ecn_ok	   : 1,
+	u16			snd_wscale : 4, /* 对端的扩大因子 */
+				rcv_wscale : 4, /* 本端的扩大因子 */
+				tstamp_ok  : 1, /* 连接是否支持TIMESTAMP选项 */
+				sack_ok	   : 1, /* 连接是否支持SACK选项 */
+				wscale_ok  : 1, /* 连接是否支持Window Scale选项 */
+				ecn_ok	   : 1, /* 连接是否支持ECN选项 */
 				acked	   : 1,
 				no_srccheck: 1;
 	kmemcheck_bitfield_end(flags);
-	struct ip_options	*opt;
+	struct ip_options	*opt;		/* IP选项 */
 };
 
 static inline struct inet_request_sock *inet_rsk(const struct request_sock *sk)

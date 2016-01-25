@@ -4403,7 +4403,7 @@ static void tcp_reset(struct sock *sk)
 	}
 
 	if (!sock_flag(sk, SOCK_DEAD))
-		sk->sk_error_report(sk);
+		sk->sk_error_report(sk); /* µ÷ÓÃsock_def_error_report() */
 
 	tcp_done(sk);
 }

@@ -37,10 +37,16 @@ int sysctl_max_syn_backlog = 256;
 
 int reqsk_queue_alloc(struct request_sock_queue *queue,
 		      unsigned int nr_table_entries)
+/* nr_table_entries参数即listen()系统调用的backlog参数，
+ * 但是受到sysctl_somaxconn上限的影响 
+ */
 {
 	size_t lopt_size = sizeof(struct listen_sock);
 	struct listen_sock *lopt;
 
+	/* 以下把nr_table_entries设置在[8, sysctl_max_syn_backlog]之间，
+	 * 并且nr_table_entries+1为2的整次幂(因为要用来计算max_qlen_log)
+	 */
 	nr_table_entries = min_t(u32, nr_table_entries, sysctl_max_syn_backlog);
 	nr_table_entries = max_t(u32, nr_table_entries, 8);
 	nr_table_entries = roundup_pow_of_two(nr_table_entries + 1);

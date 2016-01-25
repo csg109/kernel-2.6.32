@@ -28,33 +28,35 @@ struct dst_entry;
 struct proto;
 
 struct request_sock_ops {
-	int		family;
-	int		obj_size;
-	struct kmem_cache	*slab;
+	int		family;		/* 所属的协议族 */
+	int		obj_size; 	/* 连接请求块的大小 */
+	struct kmem_cache	*slab;	/* 连接请求块的高速缓存 */
 	char		*slab_name;
 	int		(*rtx_syn_ack)(struct sock *sk,
-				       struct request_sock *req);
+				       struct request_sock *req); /* 重传SYNACK */
 	void		(*send_ack)(struct sock *sk, struct sk_buff *skb,
-				    struct request_sock *req);
+				    struct request_sock *req);	/* 发送ACK */
 	void		(*send_reset)(struct sock *sk,
-				      struct sk_buff *skb);
-	void		(*destructor)(struct request_sock *req);
+				      struct sk_buff *skb); 	/* 发送RST */
+	void		(*destructor)(struct request_sock *req); /* 析构函数 */
 };
 
 /* struct request_sock - mini sock to represent a connection request
  */
 struct request_sock {
 	struct request_sock		*dl_next; /* Must be first member! */
-	u16				mss;
+	u16				mss;	 /* 客户端通告的MSS */
 	u8				retrans; /* 重传SYN-ACK的次数 */
 	u8				cookie_ts; /* syncookie: encode tcpopts in timestamp */
 	/* The following two fields can be easily recomputed I think -AK */
 	u32				window_clamp; /* window clamp at creation time */
+						      /* 本端的最大通告窗口 */
 	u32				rcv_wnd;	  /* rcv_wnd offered first time */
-	u32				ts_recent;
-	unsigned long			expires;
-	const struct request_sock_ops	*rsk_ops;
-	struct sock			*sk;
+							  /* 本端的接收窗口大小 */
+	u32				ts_recent;	  /* 下个发送段的时间戳回显值 */
+	unsigned long			expires;	  /* SYN-ACK的超时时间 */
+	const struct request_sock_ops	*rsk_ops;	  /* 指向tcp_request_sock_ops，操作函数 */
+	struct sock			*sk;		  /* 连接建立之前无效 */
 	u32				secid;
 	u32				peer_secid;
 };
@@ -225,10 +227,10 @@ static inline int reqsk_queue_removed(struct request_sock_queue *queue,
 static inline int reqsk_queue_added(struct request_sock_queue *queue)
 {
 	struct listen_sock *lopt = queue->listen_opt;
-	const int prev_qlen = lopt->qlen;
+	const int prev_qlen = lopt->qlen; /* 之前的半连接队列长度 */
 
-	lopt->qlen_young++;
-	lopt->qlen++;
+	lopt->qlen_young++;	/* 更新未重传过的请求块数 */
+	lopt->qlen++;		/* 更新半连接队列长度 */
 	return prev_qlen;
 }
 
@@ -256,13 +258,13 @@ static inline void reqsk_queue_hash_req(struct request_sock_queue *queue,
 {
 	struct listen_sock *lopt = queue->listen_opt;
 
-	req->expires = jiffies + timeout;
-	req->retrans = 0;
-	req->sk = NULL;
-	req->dl_next = lopt->syn_table[hash];
+	req->expires = jiffies + timeout;	/* SYNACK的超时时间 */
+	req->retrans = 0;			/* SYNACK的重传次数 */
+	req->sk = NULL;				/* 连接尚未建立 */
+	req->dl_next = lopt->syn_table[hash];	/* 指向下一个req */
 
 	write_lock(&queue->syn_wait_lock);
-	lopt->syn_table[hash] = req;
+	lopt->syn_table[hash] = req;		/* 把请求链入半连接队列 */
 	write_unlock(&queue->syn_wait_lock);
 }
 

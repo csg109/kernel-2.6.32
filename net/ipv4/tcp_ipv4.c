@@ -1223,7 +1223,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	__u32 isn = TCP_SKB_CB(skb)->when;
 	struct dst_entry *dst = NULL;
 #ifdef CONFIG_SYN_COOKIES
-	int want_cookie = 0;
+	int want_cookie = 0; /* 使用syn-cookie的标志 */
 #else
 #define want_cookie 0 /* Argh, why doesn't gcc optimize this :( */
 #endif
@@ -1239,11 +1239,11 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	/* 半连接队列满 */
 	if (inet_csk_reqsk_queue_is_full(sk) && !isn) {
 #ifdef CONFIG_SYN_COOKIES
-		if (sysctl_tcp_syncookies) {
+		if (sysctl_tcp_syncookies) { /* 如果使用syn-cookies就先不丢弃 */
 			want_cookie = 1;
 		} else
 #endif
-		goto drop;
+		goto drop; /* 没有使用syn-cookies的情况在连接队列满就直接丢弃SYN包 */
 	}
 
 	/* Accept backlog is full. If we have already queued enough
@@ -1255,7 +1255,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1)
 		goto drop;
 
-	req = inet_reqsk_alloc(&tcp_request_sock_ops);
+	req = inet_reqsk_alloc(&tcp_request_sock_ops); /* 申请一个连接请求块 */
 	if (!req)
 		goto drop;
 
@@ -1290,10 +1290,10 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 
 	if (want_cookie) {
 #ifdef CONFIG_SYN_COOKIES
-		syn_flood_warning(skb);
+		syn_flood_warning(skb); /* syn-cookies每分钟报警 */
 		req->cookie_ts = tmp_opt.tstamp_ok;
 #endif
-		isn = cookie_v4_init_sequence(sk, skb, &req->mss);
+		isn = cookie_v4_init_sequence(sk, skb, &req->mss); /* 计算cookie */
 	} else if (!isn) {
 		struct inet_peer *peer = NULL;
 
@@ -1336,11 +1336,12 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 			goto drop_and_release;
 		}
 
-		isn = tcp_v4_init_sequence(skb);
+		isn = tcp_v4_init_sequence(skb); /* 计算初始序列号 */
 	}
-	tcp_rsk(req)->snt_isn = isn;
-	tcp_rsk(req)->snt_synack = tcp_time_stamp;
+	tcp_rsk(req)->snt_isn = isn; /* 保存seq */
+	tcp_rsk(req)->snt_synack = tcp_time_stamp; /* synack发送时间，用于在接收ACK时计算RTT */
 
+	/* 这里发送SYN-ACK，如果发送失败或者使用syn-cookies则不保存连接请求块 */
 	if (__tcp_v4_send_synack(sk, req, dst) || want_cookie)
 		goto drop_and_free;
 
