@@ -345,6 +345,7 @@ struct tcp_sock {
 	u32	snd_up;		/* Urgent pointer		*/
 
 	u8	keepalive_probes; /* num of allowed keep alive probes	*/
+				  /* 由setsockopt设置的keepalive的探测次数 */
 /*
  *      Options received (usually on last packet, some only on SYN packets).
  */
@@ -430,7 +431,9 @@ struct tcp_sock {
 
 	u32	urg_seq;	/* Seq of received urgent pointer */
 	unsigned int		keepalive_time;	  /* time before keep alive takes place */
+						  /* 由setsockopt设置的keepalive探测时间,即空闲多久后才发送探测报文 */
 	unsigned int		keepalive_intvl;  /* time interval between keep alive probes */
+						  /* 由setsockopt设置的keepalive的探测间隔, 即探测报文之间的时间间隔 */
 
 	int			linger2;
 

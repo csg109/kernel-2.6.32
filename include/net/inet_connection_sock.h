@@ -114,6 +114,7 @@ struct inet_connection_sock {
 		__u32		  ato;		 /* Predicted tick of soft clock	   */
 		unsigned long	  timeout;	 /* Currently scheduled timeout		   */
 		__u32		  lrcvtime;	 /* timestamp of last received data packet */
+						 /* 最后一次接收到带数据的报文的时间 */
 		__u16		  last_seg_size; /* Size of last incoming segment	   */
 		__u16		  rcv_mss;	 /* MSS used for delayed ACK decisions	   */ 
 	} icsk_ack;				/* Delayed ACK的控制模块 */

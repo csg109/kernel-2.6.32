@@ -283,7 +283,8 @@ struct sock {
 	long			sk_sndtimeo;
 	struct sk_filter      	*sk_filter;
 	void			*sk_protinfo;
-	struct timer_list	sk_timer; 		/* Keepalive定时器，函数为tcp_keepalive_timer(), 在tcp_init_xmit_timers()中被初始化 */
+	struct timer_list	sk_timer; 		/* Keepalive定时器，同时也为SYNACK重传定时器和FIN_WAIT2定时器
+							 * handler函数为tcp_keepalive_timer(), 在tcp_init_xmit_timers()中被初始化 */
 	ktime_t			sk_stamp;
 	struct socket		*sk_socket;
 	void			*sk_user_data;

@@ -39,7 +39,7 @@ struct westwood {
 	u32    rtt; 		 /* 当前RTT的值，每收到一个ACK都更新 */
 	u32    rtt_min;          /* minimum observed RTT *//* 最小RTT */
 	u8     first_ack;        /* flag which infers that this is the first ack */
-	u8     reset_rtt_min;    /* Reset RTT min to next RTT sample*/
+	u8     reset_rtt_min;    /* Reset RTT min to next RTT sample*//* 用来设置接下来需要重置rtt_min */
 };
 
 

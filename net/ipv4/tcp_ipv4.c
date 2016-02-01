@@ -530,7 +530,7 @@ void tcp_v4_send_check(struct sock *sk, int len, struct sk_buff *skb)
 		skb->csum_offset = offsetof(struct tcphdr, check);
 	} else {
 		/* tcp_v4_check累加伪首部，获取最终的校验和。csum_partial累加TCP报头。
-		 * 那么skb->csum应该是TCP数据部分的累加，这是在从用户空间复制时顺便累加的*/
+		 * 那么skb->csum应该是TCP数据部分的累加，这是在从用户空间复制时顺便累加的(skb_copy_to_page)*/
 		th->check = tcp_v4_check(len, inet->saddr, inet->daddr,
 					 csum_partial(th,
 						      th->doff << 2,

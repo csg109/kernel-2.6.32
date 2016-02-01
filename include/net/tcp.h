@@ -1064,6 +1064,10 @@ static inline u32 keepalive_time_elapsed(const struct tcp_sock *tp)
 {
 	const struct inet_connection_sock *icsk = &tp->inet_conn;
 
+	/* lrcvtime是最后一次接收到数据报的时间 
+	 * rcv_tstamp是最后一次接收到ACK的时间 
+	 * 返回值就是最后一次接收到报文，到现在的时间，即经历的空闲时间。 
+	 */
 	return min_t(u32, tcp_time_stamp - icsk->icsk_ack.lrcvtime,
 			  tcp_time_stamp - tp->rcv_tstamp);
 }

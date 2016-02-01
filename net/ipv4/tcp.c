@@ -943,16 +943,16 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 
 		while (seglen > 0) {
 			int copy = 0;
-			int max = size_goal;
+			int max = size_goal; /* 单个skb的最大数据长度，如果使用了GSO，长度为MSS的整数倍 */
 
-			skb = tcp_write_queue_tail(sk);
-			if (tcp_send_head(sk)) {
-				if (skb->ip_summed == CHECKSUM_NONE)
+			skb = tcp_write_queue_tail(sk); /* 发送队列的最后一个skb */
+			if (tcp_send_head(sk)) { /* 还有未发送的数据，说明该skb还未发送 */
+				if (skb->ip_summed == CHECKSUM_NONE) /* 如果网卡不支持检验和计算，那么skb的最大长度为MSS，即不能使用GSO */
 					max = mss_now;
-				copy = max - skb->len;
+				copy = max - skb->len; /* 此skb可追加的数据长度 */
 			}
 
-			if (copy <= 0) {
+			if (copy <= 0) { /* 需要使用新的skb来装数据 */
 new_segment:
 				/* Allocate new segment. If the interface is SG,
 				 * allocate skb fitting to single page.
@@ -961,7 +961,12 @@ new_segment:
 				if (!sk_stream_memory_free(sk))
 					goto wait_for_sndbuf;
 
-				/* 分配一个skb */
+				/*
+				 * 申请一个skb，其线性数据区的大小为：
+				 * 通过select_size()得到的线性数据区中TCP负荷的大小 + 最大的协议头长度。
+				 * 如果申请skb失败了，或者虽然申请skb成功，但是从系统层面判断此次申请不合法，
+				 * 那么就进入睡眠，等待内存
+				 */
 				skb = sk_stream_alloc_skb(sk, select_size(sk),
 						sk->sk_allocation);
 				if (!skb)
@@ -970,6 +975,7 @@ new_segment:
 				/*
 				 * Check whether we can use HW checksum.
 				 */
+				/* 如果网卡支持校验和的计算，那么由硬件计算报头和首部的校验和 */
 				if (sk->sk_route_caps & NETIF_F_ALL_CSUM)
 					skb->ip_summed = CHECKSUM_PARTIAL;
 
@@ -979,17 +985,18 @@ new_segment:
 			}
 
 			/* Try to append data to the end of skb. */
+			/* 本次可拷贝的数据量不能超过数据块的长度 */
 			if (copy > seglen)
 				copy = seglen;
 
 			/* Where to copy to? */
-			if (skb_tailroom(skb) > 0) {
+			if (skb_tailroom(skb) > 0) { /* 如果skb的线性数据区还有剩余空间，就先复制到线性数据区 */
 				/* We have some space in skb head. Superb! */
 				if (copy > skb_tailroom(skb))
 					copy = skb_tailroom(skb);
 				if ((err = skb_add_data(skb, from, copy)) != 0)
 					goto do_fault;
-			} else {
+			} else { /* 如果skb的线性数据区已经用完了，那么就使用分页区 */
 				int merge = 0;
 				int i = skb_shinfo(skb)->nr_frags;
 				struct page *page = TCP_PAGE(sk);
@@ -2184,14 +2191,17 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		if (val < 1 || val > MAX_TCP_KEEPIDLE)
 			err = -EINVAL;
 		else {
-			tp->keepalive_time = val * HZ;
+			tp->keepalive_time = val * HZ; /* 设置新的空闲时间 */
+			/* 如果有使用SO_KEEPALIVE选项，并且连接处于非监听非结束的状态。 
+			 * 这个时候保活定时器已经在计时了，这里设置新的超时时间
+			 */
 			if (sock_flag(sk, SOCK_KEEPOPEN) &&
 			    !((1 << sk->sk_state) &
 			      (TCPF_CLOSE | TCPF_LISTEN))) {
-				u32 elapsed = keepalive_time_elapsed(tp);
-				if (tp->keepalive_time > elapsed)
+				u32 elapsed = keepalive_time_elapsed(tp); /* 连接已经经历的空闲时间 */
+				if (tp->keepalive_time > elapsed) /* 时间还未到 */
 					elapsed = tp->keepalive_time - elapsed;
-				else
+				else /* 时间已经到了, 马上触发keepalive定时器 */
 					elapsed = 0;
 				inet_csk_reset_keepalive_timer(sk, elapsed);
 			}
@@ -2201,13 +2211,13 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		if (val < 1 || val > MAX_TCP_KEEPINTVL)
 			err = -EINVAL;
 		else
-			tp->keepalive_intvl = val * HZ;
+			tp->keepalive_intvl = val * HZ; /* 设置新的探测报文间隔 */
 		break;
 	case TCP_KEEPCNT:
 		if (val < 1 || val > MAX_TCP_KEEPCNT)
 			err = -EINVAL;
 		else
-			tp->keepalive_probes = val;
+			tp->keepalive_probes = val; /* 设置新的探测次数 */
 		break;
 	case TCP_SYNCNT:
 		if (val < 1 || val > MAX_TCP_SYNCNT)

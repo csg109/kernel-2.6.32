@@ -489,12 +489,19 @@ static void tcp_synack_timer(struct sock *sk)
 
 void tcp_set_keepalive(struct sock *sk, int val)
 {
+	/* 不在以下两个状态设置保活定时器： 
+	 * TCP_CLOSE：sk_timer用作FIN_WAIT2定时器 
+	 * TCP_LISTEN：sk_timer用作SYNACK重传定时器
+	 */
 	if ((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN))
 		return;
 
+	/* 如果SO_KEEPALIVE选项值为1，且此前没有设置SOCK_KEEPOPEN标志， 
+	 * 则激活sk_timer，用作保活定时器
+	 */
 	if (val && !sock_flag(sk, SOCK_KEEPOPEN))
 		inet_csk_reset_keepalive_timer(sk, keepalive_time_when(tcp_sk(sk)));
-	else if (!val)
+	else if (!val) /* 如果SO_KEEPALIVE选项值为0，则删除保活定时器 */
 		inet_csk_delete_keepalive_timer(sk);
 }
 
@@ -514,11 +521,13 @@ static void tcp_keepalive_timer (unsigned long data)
 		goto out;
 	}
 
-	if (sk->sk_state == TCP_LISTEN) { /* listen状态则执行syn-ack定时器 */
+	/* listen状态则执行syn-ack定时器 */
+	if (sk->sk_state == TCP_LISTEN) { 
 		tcp_synack_timer(sk);
 		goto out;
 	}
 
+	/* FIN_WAIT2定时器 */
 	if (sk->sk_state == TCP_FIN_WAIT2 && sock_flag(sk, SOCK_DEAD)) {
 		if (tp->linger2 >= 0) {
 			const int tmo = tcp_fin_time(sk) - TCP_TIMEWAIT_LEN;
@@ -532,34 +541,42 @@ static void tcp_keepalive_timer (unsigned long data)
 		goto death;
 	}
 
+	/* 以下为Keepalive保活定时器 */
 	if (!sock_flag(sk, SOCK_KEEPOPEN) || sk->sk_state == TCP_CLOSE)
 		goto out;
 
-	elapsed = keepalive_time_when(tp);
+	elapsed = keepalive_time_when(tp); /* 连接的空闲时间超过此值，就发送保活探测报文 */
 
 	/* It is alive without keepalive 8) */
+	/* 如果网络中有发送且未确认的数据包，或者发送队列不为空，说明连接不是idle的
+	 * 既然连接不是idle的，就没有必要探测对端是否正常。 
+	 * 保活定时器重新开始计时即可。 
+	 */
 	if (tp->packets_out || tcp_send_head(sk))
-		goto resched;
+		goto resched; /* 重置keepalive定时器 */
 
-	elapsed = keepalive_time_elapsed(tp);
+	elapsed = keepalive_time_elapsed(tp); /* 连接经历的空闲时间，即上次收到报文至今的时间 */
 
-	if (elapsed >= keepalive_time_when(tp)) {
+	if (elapsed >= keepalive_time_when(tp)) { /* 如果连接空闲的时间超过了设置的时间值 */
+		/* 发送的保活探测包达到了保活探测的最大次数, 发送RST然后断开连接 */
 		if (icsk->icsk_probes_out >= keepalive_probes(tp)) {
 			tcp_send_active_reset(sk, GFP_ATOMIC);
 			tcp_write_err(sk);
 			goto out;
 		}
-		if (tcp_write_wakeup(sk) <= 0) {
-			icsk->icsk_probes_out++;
-			elapsed = keepalive_intvl_when(tp);
+		/* 如果还不到关闭连接的时候，就继续发送保活探测包 */
+		if (tcp_write_wakeup(sk) <= 0) { /* 这里发送探测包 */
+			icsk->icsk_probes_out++; /* 已发送的保活探测包个数 */
+			elapsed = keepalive_intvl_when(tp); /* 下次超时的时间，默认为75s */
 		} else {
 			/* If keepalive was lost due to local congestion,
 			 * try harder.
 			 */
-			elapsed = TCP_RESOURCE_PROBE_INTERVAL;
+			elapsed = TCP_RESOURCE_PROBE_INTERVAL; /* 默认为500ms，会使超时更加频繁 */
 		}
 	} else {
 		/* It is tp->rcv_tstamp + keepalive_time_when(tp) */
+		/* 如果连接的空闲时间，还没有超过设定值，则接着等待 */
 		elapsed = keepalive_time_when(tp) - elapsed;
 	}
 

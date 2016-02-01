@@ -2658,7 +2658,7 @@ static int tcp_xmit_probe_skb(struct sock *sk, int urgent)
 }
 
 /* Initiate keepalive or window probe from timer. */
-/* 发送0窗口持续探测段
+/* 发送0窗口持续探测段 或者 keepalive探测
  * 返回值：0表示发送成功；
  * 	   小于0表示发送失败; 
  * 	   大于0表示由于本地拥塞导致发送失败
