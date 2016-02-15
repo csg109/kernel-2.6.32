@@ -90,7 +90,7 @@ static __always_inline unsigned read_seqbegin(const seqlock_t *sl)
 repeat:
 	ret = sl->sequence;
 	smp_rmb();
-	if (unlikely(ret & 1)) {
+	if (unlikely(ret & 1)) { /* 说明在写，需等待 */
 		cpu_relax();
 		goto repeat;
 	}
@@ -107,6 +107,7 @@ static __always_inline int read_seqretry(const seqlock_t *sl, unsigned start)
 {
 	smp_rmb();
 
+	/* start为之前读时记录的seq, 如果不等于现在的seq说明发生了写 */
 	return (sl->sequence != start);
 }
 

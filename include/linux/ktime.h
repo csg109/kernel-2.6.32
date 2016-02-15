@@ -44,7 +44,7 @@
  * config switch CONFIG_KTIME_SCALAR.
  */
 union ktime {
-	s64	tv64;
+	s64	tv64; 	/* дицК */
 #if BITS_PER_LONG != 64 && !defined(CONFIG_KTIME_SCALAR)
 	struct {
 # ifdef __BIG_ENDIAN

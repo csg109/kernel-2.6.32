@@ -135,7 +135,7 @@ static inline s64 timekeeping_get_ns_raw(void)
  * This read-write spinlock protects us from races in SMP while
  * playing with xtime.
  */
-__cacheline_aligned_in_smp DEFINE_SEQLOCK(xtime_lock);
+__cacheline_aligned_in_smp DEFINE_SEQLOCK(xtime_lock); /* xtime的顺序锁 */
 
 
 /*
@@ -229,17 +229,17 @@ void getnstimeofday(struct timespec *ts)
 	WARN_ON(timekeeping_suspended);
 
 	do {
-		seq = read_seqbegin(&xtime_lock);
+		seq = read_seqbegin(&xtime_lock); /* 获取顺序锁序列号 */
 
-		*ts = xtime;
-		nsecs = timekeeping_get_ns();
+		*ts = xtime;	/* 取得xtime时间 */
+		nsecs = timekeeping_get_ns(); /* 获取纳秒 */
 
 		/* If arch requires, add in gettimeoffset() */
-		nsecs += arch_gettimeoffset();
+		nsecs += arch_gettimeoffset(); /* 加上偏差的纳秒 */
 
-	} while (read_seqretry(&xtime_lock, seq));
+	} while (read_seqretry(&xtime_lock, seq)); /* 被写了需要重新读 */
 
-	timespec_add_ns(ts, nsecs);
+	timespec_add_ns(ts, nsecs); /* 校正一下纳秒 */
 }
 
 EXPORT_SYMBOL(getnstimeofday);
@@ -913,10 +913,11 @@ struct timespec current_kernel_time(void)
 	unsigned long seq;
 
 	do {
+		/* 获取顺序锁的序列号，如果有写则等待 */
 		seq = read_seqbegin(&xtime_lock);
 
-		now = xtime_cache;
-	} while (read_seqretry(&xtime_lock, seq));
+		now = xtime_cache; /* 获取全局timespec时间 */
+	} while (read_seqretry(&xtime_lock, seq)); /* 说明我们读完后被写了，需要从新读 */
 
 	return now;
 }

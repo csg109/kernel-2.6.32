@@ -3508,8 +3508,8 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 	u32 pkts_acked = 0;
 	u32 reord = tp->packets_out;
 	u32 prior_sacked = tp->sacked_out;
-	s32 seq_rtt = -1;
-	s32 ca_seq_rtt = -1;
+	s32 seq_rtt = -1; /* 记录第一个被确认数据包的RTT, 用于TCP计算srtt和RTO, 比较保守 */
+	s32 ca_seq_rtt = -1; /* 记录最后一个确认数据包的RTT, 用于拥塞算法，需要比较精准 */
 	ktime_t last_ackt = net_invalid_timestamp(); /* last_ackt初始化为0 */
 
 	/* 遍历发送队列sk_write_queue 
@@ -3634,17 +3634,20 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 			s32 rtt_us = -1;
 
 			/* Is the ACK triggering packet unambiguous? */
-			if (!(flag & FLAG_RETRANS_DATA_ACKED)) {
+			/* 如果确认了重传数据，那么给拥塞算法的rtt为-1 */
+			if (!(flag & FLAG_RETRANS_DATA_ACKED)) { /* 没有确认重传数据 */
 				/* High resolution needed and available? */
+				/* 拥塞算法指定了TCP_CONG_RTT_STAMP, 那么使用ktime高精度的RTT */
 				if (ca_ops->flags & TCP_CONG_RTT_STAMP &&
 				    !ktime_equal(last_ackt,
 						 net_invalid_timestamp()))
 					rtt_us = ktime_us_delta(ktime_get_real(),
 								last_ackt);
+				/* 否则使用jiffies的RTT，转为化微秒但是精度只为毫秒 */
 				else if (ca_seq_rtt >= 0)
 					rtt_us = jiffies_to_usecs(ca_seq_rtt);
 			}
-
+			/* 调用拥塞算法计算RTT的函数 */
 			ca_ops->pkts_acked(sk, pkts_acked, rtt_us);
 		}
 	}
