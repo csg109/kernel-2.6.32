@@ -683,7 +683,7 @@ static void icmp_unreach(struct sk_buff *skb)
 		case ICMP_PROT_UNREACH:
 		case ICMP_PORT_UNREACH:
 			break;
-		case ICMP_FRAG_NEEDED:
+		case ICMP_FRAG_NEEDED: /* 需要分片 */
 			if (ipv4_config.no_pmtu_disc) {
 				LIMIT_NETDEBUG(KERN_INFO "ICMP: %pI4: fragmentation needed and DF set.\n",
 					       &iph->daddr);
@@ -1046,7 +1046,7 @@ int icmp_rcv(struct sk_buff *skb)
 		}
 	}
 
-	icmp_pointers[icmph->type].handler(skb);
+	icmp_pointers[icmph->type].handler(skb); /* 处理ICMP */
 
 drop:
 	kfree_skb(skb);
@@ -1071,7 +1071,7 @@ static const struct icmp_control icmp_pointers[NR_ICMP_TYPES + 1] = {
 		.handler = icmp_discard,
 		.error = 1,
 	},
-	[ICMP_DEST_UNREACH] = {
+	[ICMP_DEST_UNREACH] = { /* 类型为3, 目的不可达 */
 		.handler = icmp_unreach,
 		.error = 1,
 	},

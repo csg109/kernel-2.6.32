@@ -229,6 +229,7 @@ static int ip_local_deliver_finish(struct sk_buff *skb)
 			}
 			/* 将数据包交给已注册的高层协议的处理函数 
 			 * tcp为tcp_v4_rcv() 
+			 * icmp为icmp_rcv()
 			 */
 			ret = ipprot->handler(skb);
 			if (ret < 0) {

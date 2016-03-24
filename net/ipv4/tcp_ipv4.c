@@ -1154,17 +1154,21 @@ static int tcp_v4_inbound_md5_hash(struct sock *sk, struct sk_buff *skb)
 	unsigned char newhash[16];
 
 	hash_expected = tcp_v4_md5_do_lookup(sk, iph->saddr);
-	hash_location = tcp_parse_md5sig_option(th);
+	/* 分析TCP选项的MD5选项字段, 找不到选项返回NULL */
+	hash_location = tcp_parse_md5sig_option(th); 
 
 	/* We've parsed the options - do we have a hash? */
+	/* 没有使用MD5且TCP选项也没有MD5, 正常通过 */
 	if (!hash_expected && !hash_location)
 		return 0;
 
+	/* 使用了MD5但是TCP选项里没有MD5，丢弃数据包 */
 	if (hash_expected && !hash_location) {
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPMD5NOTFOUND);
 		return 1;
 	}
 
+	/* 没有使用MD5但是TCP选项里有MD5，也丢弃数据包 */
 	if (!hash_expected && hash_location) {
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPMD5UNEXPECTED);
 		return 1;
@@ -1173,10 +1177,12 @@ static int tcp_v4_inbound_md5_hash(struct sock *sk, struct sk_buff *skb)
 	/* Okay, so this is hash_expected and hash_location -
 	 * so we need to calculate the checksum.
 	 */
+	/* 进行MD5校验，失败返回1, 计算结果保存在newhash中 */
 	genhash = tcp_v4_md5_hash_skb(newhash,
 				      hash_expected,
 				      NULL, NULL, skb);
 
+	/* 如果以上失败，或者MD5校验不匹配，则丢弃数据包 */
 	if (genhash || memcmp(hash_location, newhash, 16) != 0) {
 		if (net_ratelimit()) {
 			printk(KERN_INFO "MD5 Hash failed for (%pI4, %d)->(%pI4, %d)%s\n",
@@ -1186,7 +1192,7 @@ static int tcp_v4_inbound_md5_hash(struct sock *sk, struct sk_buff *skb)
 		}
 		return 1;
 	}
-	return 0;
+	return 0; /* 校验成功 */
 }
 
 #endif
@@ -1306,14 +1312,18 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		 * timewait bucket, so that all the necessary checks
 		 * are made in the function processing timewait state.
 		 */
+		/* 当tcp_timestamp和tw_recycle同时打开的情况下
+		 */
 		if (tmp_opt.saw_tstamp &&
 		    tcp_death_row.sysctl_tw_recycle &&
 		    (dst = inet_csk_route_req(sk, req)) != NULL &&
 		    (peer = rt_get_peer((struct rtable *)dst)) != NULL &&
-		    peer->v4daddr == saddr) {
-			if (get_seconds() < peer->tcp_ts_stamp + TCP_PAWS_MSL &&
+		    peer->v4daddr == saddr) { /* IP地址一致 */
+			if (get_seconds() < peer->tcp_ts_stamp + TCP_PAWS_MSL && /* 距上个连接60秒以内, 注意这个单位为秒 */
 			    (s32)(peer->tcp_ts - req->ts_recent) >
-							TCP_PAWS_WINDOW) {
+							TCP_PAWS_WINDOW) { /* 本次的时间戳比上个连接还早，说明SYN包是之前重传的 */
+				/* 针对距离上个连接60秒内，并且时间戳早于上个连接的SYN包丢弃掉
+				 */
 				NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PAWSPASSIVEREJECTED);
 				goto drop_and_release;
 			}

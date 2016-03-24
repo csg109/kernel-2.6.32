@@ -1801,7 +1801,7 @@ tcp_sacktag_write_queue(struct sock *sk, struct sk_buff *ack_skb,
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
-	/*  SACK选项的起始地址，sacked为SACK选项在TCP首部的偏移 */
+	/* SACK选项的起始地址，sacked为SACK选项在TCP首部的偏移 */
 	unsigned char *ptr = (skb_transport_header(ack_skb) +
 			      TCP_SKB_CB(ack_skb)->sacked); /* ptr指向首部中的SACK块 */
 	struct tcp_sack_block_wire *sp_wire = (struct tcp_sack_block_wire *)(ptr+2); /* 指向第一个sack块 */
@@ -3593,6 +3593,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 	if (likely(between(tp->snd_up, prior_snd_una, tp->snd_una)))
 		tp->snd_up = tp->snd_una;
 
+	/* 虚假SACK：当ACK确认后的下一个数据包曾经被SACK */
 	if (skb && (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED))
 		flag |= FLAG_SACK_RENEGING;
 
@@ -4225,6 +4226,7 @@ void tcp_parse_options(struct sk_buff *skb, struct tcp_options_received *opt_rx,
 	}
 }
 
+/* 只查看timestamp选项 */
 static int tcp_parse_aligned_timestamp(struct tcp_sock *tp, struct tcphdr *th)
 {
 	__be32 *ptr = (__be32 *)(th + 1);
@@ -4244,6 +4246,7 @@ static int tcp_parse_aligned_timestamp(struct tcp_sock *tp, struct tcphdr *th)
 /* Fast parse options. This hopes to only see timestamps.
  * If it is wrong it falls back on tcp_parse_options().
  */
+/* 用于检测timestamp选项，有则返回1 */
 static int tcp_fast_parse_options(struct sk_buff *skb, struct tcphdr *th,
 				  struct tcp_sock *tp)
 {
@@ -5527,6 +5530,7 @@ static int tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* RFC1323: H1. Apply PAWS check first. */
+	/* 判断timestamp时间戳是否合法, 如果时间戳不是递增的，则数据包丢弃 */
 	if (tcp_fast_parse_options(skb, th, tp) && tp->rx_opt.saw_tstamp &&
 	    tcp_paws_discard(sk, skb)) {
 		if (!th->rst) {

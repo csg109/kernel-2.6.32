@@ -209,6 +209,9 @@ struct tcp_sack_block { /* 表示一个SACK块 */
 struct tcp_options_received {
 /*	PAWS/RTTM data	*/
 	long	ts_recent_stamp;/* Time we stored ts_recent (for aging) */
+				/* 记录秒时间(get_seconds()的返回值) 
+				 * 即ts_recent对应的时间,单位为秒
+				 */
 	u32	ts_recent;	/* Time stamp to echo next		*/
 				/* 最后一次收到对方的时间戳, 即rcv_tsval */
 	u32	rcv_tsval;	/* Time stamp value             	*/
@@ -414,7 +417,7 @@ struct tcp_sock {
 	u32	retrans_stamp;	/* Timestamp of the last retransmit,
 				 * also used in SYN-SENT to remember stamp of
 				 * the first SYN. */
-				/* 最后重传的时间戳 */
+				/* 最后一次重传开始的时间戳 */
 	/* 在使用F-RTO算法进行发送超时处理，或进入Recovery进行重传，或进入Loss开始慢启动时，
 	 * 记录当时的SND.UNA,标记重传起始点。
 	 * 它是检测是否可以进行拥塞撤销的条件之一，一般在完成拥塞撤销操作或进入Loss状态后清零
