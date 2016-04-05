@@ -758,6 +758,7 @@ static int __tcp_v4_send_synack(struct sock *sk, struct request_sock *req,
 	if (!dst && (dst = inet_csk_route_req(sk, req)) == NULL)
 		return -1;
 
+	/* 创建SYN-ACK包 */
 	skb = tcp_make_synack(sk, dst, req);
 
 	if (skb) {
@@ -1390,6 +1391,7 @@ struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	if (!dst && (dst = inet_csk_route_req(sk, req)) == NULL)
 		goto exit;
 
+	/* 创建sock */
 	newsk = tcp_create_openreq_child(sk, req, skb);
 	if (!newsk)
 		goto exit_nonewsk;

@@ -1007,16 +1007,18 @@ static inline int tcp_win_from_space(int space)
 	/* 这里计算为3/4的space，可能是为了减去skb本身的开销，得到真正应用层数据的可用大小 */
 	return sysctl_tcp_adv_win_scale<=0 ?
 		(space>>(-sysctl_tcp_adv_win_scale)) :
-		space - (space>>sysctl_tcp_adv_win_scale);
+		space - (space>>sysctl_tcp_adv_win_scale); /* 这里是3/4 space */
 }
 
 /* Note: caller must be prepared to deal with negative returns */ 
+/* 返回剩余接收缓存的3/4 */
 static inline int tcp_space(const struct sock *sk)
 {
 	return tcp_win_from_space(sk->sk_rcvbuf -
 				  atomic_read(&sk->sk_rmem_alloc)); /* 这两个相减为剩余可分配的大小 */
 } 
 
+/* 返回总的接收缓存的3/4 */
 static inline int tcp_full_space(const struct sock *sk)
 {
 	return tcp_win_from_space(sk->sk_rcvbuf); 

@@ -295,21 +295,28 @@ static void tcp_fixup_sndbuf(struct sock *sk)
  */
 
 /* Slow part of check#2. */
+/* 算法如下：
+ * 把3/4的剩余接收缓存，即剩余network buffer均分为2^n块。把额外开销均分为2^n份。
+ * 如果均分后每块缓存的大小大于rcv_ssthresh，且均分后的每份开销小于数据段的长度，则：
+ * 允许rcv_ssthresh增大2个对端发送MSS的估计值。
+ * 否则，不允许增大rcv_ssthresh。
+ */
 static int __tcp_grow_window(const struct sock *sk, const struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	/* Optimize this! */
 	int truesize = tcp_win_from_space(skb->truesize) >> 1;
-	int window = tcp_win_from_space(sysctl_tcp_rmem[2]) >> 1;
+	int window = tcp_win_from_space(sysctl_tcp_rmem[2]) >> 1; /* 接收缓冲区长度上限的一半 */
 
+	/* rcv_ssthresh不超过一半的接收缓冲区上限才有可能增长 */
 	while (tp->rcv_ssthresh <= window) {
 		if (truesize <= skb->len)
-			return 2 * inet_csk(sk)->icsk_ack.rcv_mss;
+			return 2 * inet_csk(sk)->icsk_ack.rcv_mss; /* 增加两个对端发送MSS的估计值 */
 
 		truesize >>= 1;
 		window >>= 1;
 	}
-	return 0;
+	return 0; /* 不增长 */
 }
 
 static void tcp_grow_window(struct sock *sk, struct sk_buff *skb)
@@ -317,6 +324,11 @@ static void tcp_grow_window(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* Check #1 */
+	/* 检查是否可以增长:
+	 * a. 接收窗口当前阈值不能超过接收窗口的上限。
+	 * b. 接收窗口当前阈值不能超过剩余接收缓存的3/4，即network buffer。
+	 * c. 没有内存压力。TCP socket系统总共使用的内存过大
+	 */
 	if (tp->rcv_ssthresh < tp->window_clamp &&
 	    (int)tp->rcv_ssthresh < tcp_space(sk) &&
 	    !tcp_memory_pressure) {
@@ -325,15 +337,19 @@ static void tcp_grow_window(struct sock *sk, struct sk_buff *skb)
 		/* Check #2. Increase window, if skb with such overhead
 		 * will fit to rcvbuf in future.
 		 */
+		/* 如果应用层数据占这个skb总共消耗内存的75%以上，则说明这个数据报是大的数据报， 
+		 * 内存的额外开销较小。这样一来我们可以放心的增长rcv_ssthresh了
+		 */
 		if (tcp_win_from_space(skb->truesize) <= skb->len)
-			incr = 2 * tp->advmss;
-		else
+			incr = 2 * tp->advmss; /* 增长两个本端最大接收MSS */
+		else /* 可能增大rcv_ssthresh，也可能不增大，具体视额外内存开销和剩余缓存而定 */
 			incr = __tcp_grow_window(sk, skb);
 
 		if (incr) {
+			/* 增加后不能超过window_clamp */
 			tp->rcv_ssthresh = min(tp->rcv_ssthresh + incr,
 					       tp->window_clamp);
-			inet_csk(sk)->icsk_ack.quick |= 1;
+			inet_csk(sk)->icsk_ack.quick |= 1; /* 允许快速ACK */
 		}
 	}
 }
@@ -637,6 +653,7 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 
 	TCP_ECN_check_ce(tp, skb);
 
+	/* 当报文段的负荷不小于128字节时，考虑增大接收窗口当前阈值rcv_ssthresh */
 	if (skb->len >= 128)
 		tcp_grow_window(sk, skb);
 }

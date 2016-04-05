@@ -316,8 +316,9 @@ struct tcp_sock {
 	u32	max_window;	/* Maximal window ever seen from peer	*/
 	/* 发送方当前有效MSS */
 	u32	mss_cache;	/* Cached effective mss, not including SACKS */
-
-	u32	window_clamp;	/* Maximal window to advertise		*//* 通告窗口的上限 */
+	/* 接收窗口的上限值，一般为(65535U << wscale)，即TCP首部能表示的最大接收窗口 */	
+	u32	window_clamp;	/* Maximal window to advertise		*/
+	/* 接收窗口阈值, 用来动态控制接收窗口的增长 */
 	u32	rcv_ssthresh;	/* Current window clamp			*/
 
 	u32	frto_highmark;	/* snd_nxt when RTO occurred */
@@ -368,7 +369,7 @@ struct tcp_sock {
 	u32	snd_cwnd_used;	/* 每次发包后记录packets_out，用来检测cwnd有没有被完全使用 */
 	u32	snd_cwnd_stamp; /* 每次改变拥塞窗口记录时间戳 */
 
- 	u32	rcv_wnd;	/* Current receiver window		*//* 接收窗口长度 */
+ 	u32	rcv_wnd;	/* Current receiver window		*//* 接收窗口大小 */
 	u32	write_seq;	/* Tail(+1) of data held in tcp send buffer *//* 发送缓存的尾部seq, 即应用层提交给内核的尾部seq */
 	u32	pushed_seq;	/* Last pushed seq, required to talk to windows */
 	u32	lost_out;	/* Lost packets			*//* 丢失包的数目 */

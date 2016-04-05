@@ -192,12 +192,12 @@ void tcp_select_initial_window(int __space, __u32 mss,
 
 	/* If no clamp set the clamp to the max possible scaled window */
 	if (*window_clamp == 0)
-		(*window_clamp) = (65535 << 14);
-	space = min(*window_clamp, space);
+		(*window_clamp) = (65535 << 14); /* 设置为最大接收窗口 */
+	space = min(*window_clamp, space); /* 不能超过window_clamp */
 
 	/* Quantize space offering to a multiple of mss if possible. */
 	if (space > mss)
-		space = (space / mss) * mss;
+		space = (space / mss) * mss; /* 对齐到MSS */
 
 	/* NOTE: offering an initial window larger than 32767
 	 * will break some buggy TCP stacks. If the admin tells us
@@ -207,12 +207,16 @@ void tcp_select_initial_window(int __space, __u32 mss,
 	 * which we interpret as a sign the remote TCP is not
 	 * misinterpreting the window field as a signed quantity.
 	 */
-	if (sysctl_tcp_workaround_signed_windows)
+	if (sysctl_tcp_workaround_signed_windows) /* 一般关闭 */
+		/* 不能超过32767，因为一些奇葩协议采用有符号的接收窗口大小 */
 		(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
 	else
-		(*rcv_wnd) = space;
+		(*rcv_wnd) = space; /* 设置初始接收窗口 */
 
 	(*rcv_wscale) = 0;
+	/* 这里计算wscale的值：
+	 * 取tcp_rmem[2]和rmem_max的大者来计算需要多大的wscale才能表示
+	 */
 	if (wscale_ok) {
 		/* Set window scaling on max possible window
 		 * See RFC1323 for an explanation of the limit to 14
@@ -229,8 +233,10 @@ void tcp_select_initial_window(int __space, __u32 mss,
 	 * initial congestion window of TCP_DEFAULT_INIT_RCVWND. Place
 	 * a limit on the initial window when mss is larger than 1460.
 	 */
+	/* 这里限制了初始的接收窗口为10个MSS */
 	if (mss > (1 << *rcv_wscale)) {
 		int init_cwnd = TCP_DEFAULT_INIT_RCVWND;
+		/* 如果MSS太大，为了防止初始接收窗口太大，所以需要调整下 */
 		if (mss > 1460)
 			init_cwnd =
 			max_t(u32, (1460 * TCP_DEFAULT_INIT_RCVWND) / mss, 2);
@@ -239,6 +245,7 @@ void tcp_select_initial_window(int __space, __u32 mss,
 	}
 
 	/* Set the clamp no higher than max representable value */
+	/* 设置window_clamp为最大能表示的接收窗口的值 */
 	(*window_clamp) = min(65535U << (*rcv_wscale), *window_clamp);
 }
 
@@ -250,10 +257,11 @@ void tcp_select_initial_window(int __space, __u32 mss,
 static u16 tcp_select_window(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	u32 cur_win = tcp_receive_window(tp);
-	u32 new_win = __tcp_select_window(sk);
+	u32 cur_win = tcp_receive_window(tp); /* 当前接收窗口的剩余大小 */
+	u32 new_win = __tcp_select_window(sk);/* 根据剩余的接收缓存，计算新的接收窗口的大小 */
 
 	/* Never shrink the offered window */
+	/* 不允许缩小已分配的接收窗口 */
 	if (new_win < cur_win) {
 		/* Danger Will Robinson!
 		 * Don't update rcv_wup/rcv_wnd here or else
@@ -264,25 +272,27 @@ static u16 tcp_select_window(struct sock *sk)
 		 */
 		new_win = ALIGN(cur_win, 1 << tp->rx_opt.rcv_wscale);
 	}
-	tp->rcv_wnd = new_win;
-	tp->rcv_wup = tp->rcv_nxt;
+	tp->rcv_wnd = new_win; /* 更新接收窗口大小 */
+	tp->rcv_wup = tp->rcv_nxt; /* 更新接收窗口的左边界，把未确认的数据累积确认 */
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
 	 */
+	/* 确保接收窗口大小不超过规定的最大值 */
 	if (!tp->rx_opt.rcv_wscale && sysctl_tcp_workaround_signed_windows)
+		/* 不能超过32767，因为一些奇葩协议采用有符号的接收窗口大小 */
 		new_win = min(new_win, MAX_TCP_WINDOW);
 	else
 		new_win = min(new_win, (65535U << tp->rx_opt.rcv_wscale));
 
 	/* RFC1323 scaling applied */
-	new_win >>= tp->rx_opt.rcv_wscale;
+	new_win >>= tp->rx_opt.rcv_wscale; /* 按比例因子缩小接收窗口，这样最多能表示30位 */
 
 	/* If we advertise zero window, disable fast path. */
 	if (new_win == 0)
 		tp->pred_flags = 0;
 
-	return new_win;
+	return new_win; /* 返回最终的接收窗口大小 */
 }
 
 /* Packet ECN state for a SYN-ACK */
@@ -1832,25 +1842,28 @@ u32 __tcp_select_window(struct sock *sk)
 	 * but may be worse for the performance because of rcv_mss
 	 * fluctuations.  --SAW  1998/11/1
 	 */
-	int mss = icsk->icsk_ack.rcv_mss;
-	int free_space = tcp_space(sk); /* 剩余接收缓存大小 */
-	int full_space = min_t(int, tp->window_clamp, tcp_full_space(sk)); /* 总的接收缓存大小 */
+	int mss = icsk->icsk_ack.rcv_mss; /* 这个是估计目前对端有效的发送mss，而不是最大的 */
+	int free_space = tcp_space(sk); /* 剩余接收缓存大小的3/4 */
+	int full_space = min_t(int, tp->window_clamp, tcp_full_space(sk)); /* 总的接收缓存大小的3/4 */
 	int window;
 
+	/* 减小mss，因为接收缓存太小了 */
 	if (mss > full_space)
 		mss = full_space;
 
+	/* 接收缓存使用一半以上时要小心了 */
 	if (free_space < (full_space >> 1)) {
-		icsk->icsk_ack.quick = 0;
+		icsk->icsk_ack.quick = 0; /* 可以快速发送ACK段的数量置零 */
 
-		if (tcp_memory_pressure)
+		if (tcp_memory_pressure) /* 有内存压力时，把接收窗口限制在5840字节以下 */
 			tp->rcv_ssthresh = min(tp->rcv_ssthresh,
 					       4U * tp->advmss);
 
-		if (free_space < mss)
+		if (free_space < mss) /* 剩余接收缓存不足以接收mss的数据, 返回0窗口 */
 			return 0;
 	}
 
+	/* 不能超过当前接收窗口阈值，这可以达接收窗口平滑增长的效果 */
 	if (free_space > tp->rcv_ssthresh)
 		free_space = tp->rcv_ssthresh;
 
@@ -1858,13 +1871,14 @@ u32 __tcp_select_window(struct sock *sk)
 	 * scaled window will not line up with the MSS boundary anyway.
 	 */
 	window = tp->rcv_wnd;
-	if (tp->rx_opt.rcv_wscale) {
+	if (tp->rx_opt.rcv_wscale) { /* 接收窗口扩大因子不为零 */
 		window = free_space;
 
 		/* Advertise enough space so that it won't get scaled away.
 		 * Import case: prevent zero window announcement if
 		 * 1<<rcv_wscale > mss.
 		 */
+		/* 防止四舍五入造成通告的接收窗口偏小 */
 		if (((window >> tp->rx_opt.rcv_wscale) << tp->rx_opt.rcv_wscale) != window)
 			window = (((window >> tp->rx_opt.rcv_wscale) + 1)
 				  << tp->rx_opt.rcv_wscale);
@@ -1877,11 +1891,14 @@ u32 __tcp_select_window(struct sock *sk)
 		 * We also don't do any window rounding when the free space
 		 * is too small.
 		 */
+		/* 截取free_space中整数个mss，如果rcv_wnd和free_space的差距在一个mss以上 */
 		if (window <= free_space - mss || window > free_space)
 			window = (free_space / mss) * mss;
+		/* 如果free space过小，则直接取free space值 */
 		else if (mss == full_space &&
 			 free_space > window + (full_space >> 1))
 			window = free_space;
+		/* 当free_space - mss < window < free_space时，直接使用rcv_wnd，不做修改 */
 	}
 
 	return window;
@@ -2374,6 +2391,7 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 	if (tp->rx_opt.user_mss && tp->rx_opt.user_mss < mss)
 		mss = tp->rx_opt.user_mss;
 
+	/* 这里计算初始接收窗口 */
 	if (req->rcv_wnd == 0) { /* ignored for retransmitted syns */
 		__u8 rcv_wscale;
 		/* Set this up on the first call only */

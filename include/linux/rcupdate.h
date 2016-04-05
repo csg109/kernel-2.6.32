@@ -124,7 +124,7 @@ extern struct lockdep_map rcu_lock_map;
  */
 static inline void rcu_read_lock(void)
 {
-	__rcu_read_lock();
+	__rcu_read_lock(); /* 通过调用preempt_disable()关闭内核可抢占性,但是中断是允许的 */
 	__acquire(RCU);
 	rcu_read_acquire();
 }
@@ -148,7 +148,7 @@ static inline void rcu_read_unlock(void)
 {
 	rcu_read_release();
 	__release(RCU);
-	__rcu_read_unlock();
+	__rcu_read_unlock(); /* 调用preempt_enable()开启抢占 */
 }
 
 /**
@@ -233,7 +233,10 @@ static inline notrace void rcu_read_unlock_sched_notrace(void)
  * (currently only the Alpha), and, more importantly, documents
  * exactly which pointers are protected by RCU.
  */
-
+/* 获取RCU保护的指针需要调用此宏获得,
+ * 为了避免编译器的优化导致指令顺序调整(目前只有DEC Alpha CPU有这问题),
+ * 所以加了内存的读屏障
+ */
 #define rcu_dereference(p)     ({ \
 				typeof(p) _________p1 = ACCESS_ONCE(p); \
 				smp_read_barrier_depends(); \
