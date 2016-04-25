@@ -124,7 +124,7 @@ int sysctl_tcp_abc __read_mostly;
 static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
-	const unsigned int lss = icsk->icsk_ack.last_seg_size;
+	const unsigned int lss = icsk->icsk_ack.last_seg_size; /* 上次收到的数据段大小 */
 	unsigned int len;
 
 	icsk->icsk_ack.last_seg_size = 0;
@@ -132,8 +132,8 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 	/* skb->len may jitter because of SACKs, even if peer
 	 * sends good full-sized frames.
 	 */
-	len = skb_shinfo(skb)->gso_size ? : skb->len;
-	if (len >= icsk->icsk_ack.rcv_mss) {
+	len = skb_shinfo(skb)->gso_size ? : skb->len; /* 本次接收到数据的长度 */
+	if (len >= icsk->icsk_ack.rcv_mss) { /* 如果本次接收到数据的长度大于等于当前估算的MSS则更新 */
 		icsk->icsk_ack.rcv_mss = len;
 	} else {
 		/* Otherwise, we make more careful check taking into account,
@@ -141,7 +141,12 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 		 *
 		 * "len" is invariant segment length, including TCP header.
 		 */
+		/* 之前的len表示数据的长度，现在加上TCP首部的长度，这才是总的长度 */
 		len += skb->data - skb_transport_header(skb);
+
+		/* 满足以下条件时，说明接收到的数据段还是比较正常的，尝试更精确的计算MSS， 
+		 * 排除SACK块的影响，更新last_seg_size和rcv_mss。
+		 */
 		if (len >= TCP_MIN_RCVMSS + sizeof(struct tcphdr) ||
 		    /* If PSH is not set, packet should be
 		     * full sized, provided peer TCP is not badly broken.
@@ -154,45 +159,59 @@ static void tcp_measure_rcv_mss(struct sock *sk, const struct sk_buff *skb)
 			 * tcp header plus fixed timestamp option length.
 			 * Resulting "len" is MSS free of SACK jitter.
 			 */
+			/* 减去报头和时间戳选项的长度，剩下的就是数据和SACK块(如果有的话) */
 			len -= tcp_sk(sk)->tcp_header_len;
-			icsk->icsk_ack.last_seg_size = len;
-			if (len == lss) {
+			icsk->icsk_ack.last_seg_size = len; /* 更新最近一次接收到的数据段的长度 */
+			if (len == lss) { /* 说明这次收到的还是full-sized，而不是小包 */
 				icsk->icsk_ack.rcv_mss = len;
 				return;
 			}
 		}
+		/* 如果之前已经收到了小包，则进入更紧急的ACK发送模式，
+		 * 接下来无论是否处于快速确认模式，都可以马上发送ACK
+		 */
 		if (icsk->icsk_ack.pending & ICSK_ACK_PUSHED)
 			icsk->icsk_ack.pending |= ICSK_ACK_PUSHED2;
+
+		/* 如果收到小包，就允许在快速确认模式中，直接发送ACK  */
 		icsk->icsk_ack.pending |= ICSK_ACK_PUSHED;
 	}
 }
 
+/* 设置快速确认的额度, 即可以发送ACK的数量
+ * 为接收窗口的一半，最多16个，最少2个
+ */
 static void tcp_incr_quickack(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
+	/* 快速确认个数为窗口的一半 */
 	unsigned quickacks = tcp_sk(sk)->rcv_wnd / (2 * icsk->icsk_ack.rcv_mss);
 
 	if (quickacks == 0)
-		quickacks = 2;
+		quickacks = 2; /* 最小2个 */
 	if (quickacks > icsk->icsk_ack.quick)
-		icsk->icsk_ack.quick = min(quickacks, TCP_MAX_QUICKACKS);
+		icsk->icsk_ack.quick = min(quickacks, TCP_MAX_QUICKACKS); /* 最多16个 */
 }
 
+/* 进入快速确认模式 */
 void tcp_enter_quickack_mode(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
-	tcp_incr_quickack(sk);
-	icsk->icsk_ack.pingpong = 0;
-	icsk->icsk_ack.ato = TCP_ATO_MIN;
+	tcp_incr_quickack(sk);	/* 设置在快速确认模式中可以发送的ACK数量 */
+	icsk->icsk_ack.pingpong = 0; /* 设置快速确认的标志 */
+	icsk->icsk_ack.ato = TCP_ATO_MIN; /* ACK超时时间 */
 }
 
 /* Send ACKs quickly, if "quick" count is not exhausted
  * and the session is not interactive.
  */
-
+/* 判断是否处于快速确认模式 */
 static inline int tcp_in_quickack_mode(const struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
+	/* 快速确认模式中可以发送的ACK数量不为0, 且设置了快速确认标志,
+	 * 就判断连接处于快速确认模式 
+	 */
 	return icsk->icsk_ack.quick && !icsk->icsk_ack.pingpong;
 }
 
@@ -216,17 +235,17 @@ static inline void TCP_ECN_withdraw_cwr(struct tcp_sock *tp)
 
 static inline void TCP_ECN_check_ce(struct tcp_sock *tp, const struct sk_buff *skb)
 {
-	if (!(tp->ecn_flags & TCP_ECN_OK))
+	if (!(tp->ecn_flags & TCP_ECN_OK)) /* 如果连接不支持ECN */
 		return;
 
 	switch (TCP_SKB_CB(skb)->flags & INET_ECN_MASK) {
-	case INET_ECN_NOT_ECT:
+	case INET_ECN_NOT_ECT: 
 		/* Funny extension: if ECT is not set on a segment,
 		 * and we already seen ECT on a previous segment,
 		 * it is probably a retransmit.
 		 */
 		if (tp->ecn_flags & TCP_ECN_SEEN)
-			tcp_enter_quickack_mode((struct sock *)tp);
+			tcp_enter_quickack_mode((struct sock *)tp); /* 进入快速确认模式 */
 		break;
 	case INET_ECN_CE:
 		tp->ecn_flags |= TCP_ECN_DEMAND_CWR;
@@ -617,41 +636,45 @@ static void tcp_event_data_recv(struct sock *sk, struct sk_buff *skb)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	u32 now;
 
-	inet_csk_schedule_ack(sk);
+	inet_csk_schedule_ack(sk); /* 设置有ACK需要发送的标志 */
 
+	/* 通过接收到的数据段，来估算对端的MSS。 
+	 * 如果接收到了小包，则设置ICSK_ACK_PUSHED标志。 
+	 * 如果之前接收过小包，本次又接收到了小包，则设置ICSK_ACK_PUSHED2标志。
+	 */
 	tcp_measure_rcv_mss(sk, skb);
 
-	tcp_rcv_rtt_measure(tp);
+	tcp_rcv_rtt_measure(tp); /* 没有使用时间戳选项时的接收端RTT计算 */
 
 	now = tcp_time_stamp;
 
-	if (!icsk->icsk_ack.ato) {
+	if (!icsk->icsk_ack.ato) { /* 如果是第一次接收到带负荷的报文 */
 		/* The _first_ data packet received, initialize
 		 * delayed ACK engine.
 		 */
-		tcp_incr_quickack(sk);
-		icsk->icsk_ack.ato = TCP_ATO_MIN;
-	} else {
-		int m = now - icsk->icsk_ack.lrcvtime;
+		tcp_incr_quickack(sk); /* 设置在快速确认模式中可以发送的ACK数量 */
+		icsk->icsk_ack.ato = TCP_ATO_MIN; /* ato的初始值，为40ms */
+	} else { /* 这里主要设置ATO */
+		int m = now - icsk->icsk_ack.lrcvtime; /* 距离上次收到数据报的时间间隔 */
 
 		if (m <= TCP_ATO_MIN / 2) {
 			/* The fastest case is the first. */
 			icsk->icsk_ack.ato = (icsk->icsk_ack.ato >> 1) + TCP_ATO_MIN / 2;
 		} else if (m < icsk->icsk_ack.ato) {
 			icsk->icsk_ack.ato = (icsk->icsk_ack.ato >> 1) + m;
-			if (icsk->icsk_ack.ato > icsk->icsk_rto)
+			if (icsk->icsk_ack.ato > icsk->icsk_rto) /* ato的值不能超过RTO */
 				icsk->icsk_ack.ato = icsk->icsk_rto;
 		} else if (m > icsk->icsk_rto) {
 			/* Too long gap. Apparently sender failed to
 			 * restart window, so that we send ACKs quickly.
 			 */
-			tcp_incr_quickack(sk);
+			tcp_incr_quickack(sk); /* 更新在快速确认模式中可以发送的ACK数量 */
 			sk_mem_reclaim(sk);
 		}
 	}
-	icsk->icsk_ack.lrcvtime = now;
+	icsk->icsk_ack.lrcvtime = now; /* 更新最后一次接收到数据报的时间 */
 
-	TCP_ECN_check_ce(tp, skb);
+	TCP_ECN_check_ce(tp, skb); /* 如果发现显式拥塞了，就进入快速确认模式 */
 
 	/* 当报文段的负荷不小于128字节时，考虑增大接收窗口当前阈值rcv_ssthresh */
 	if (skb->len >= 128)
@@ -4795,7 +4818,7 @@ queue_and_out:
 		}
 		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 		if (skb->len)
-			tcp_event_data_recv(sk, skb);
+			tcp_event_data_recv(sk, skb); /* Delay-ack控制、接收端估算RTT、接收窗口阈值调整 */
 		if (th->fin)
 			tcp_fin(skb, sk, th);
 
@@ -5310,39 +5333,46 @@ static void __tcp_ack_snd_check(struct sock *sk, int ofo_possible)
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	 /* More than one full frame received... */
+	 /* 符合以下任一条件，可以立即发送ACK： 
+	  * 1. 接收缓冲区中有一个以上的全尺寸数据段仍然是NOT ACKed，并且接收窗口变大了。
+	  * 2. 此时处于快速确认模式中。 
+	  * 3. 乱序队列不为空。 
+	  */
+
 	 /* 接收窗口中有大于一个段没有确认，通常情况下就是两个段一个ack了
 	  * rcv_nxt和rcv_wup分别表示期望接收的下一个段、上一个已经确认的段
 	  */
-	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss
+	if (((tp->rcv_nxt - tp->rcv_wup) > inet_csk(sk)->icsk_ack.rcv_mss /* 大于一段段没有发送ACK */
 	     /* ... and right edge of window advances far enough.
 	      * (tcp_recvmsg() will send ACK otherwise). Or...
 	      */
 	     /* 根据剩余空间算出的window大小大于等于接收窗口，即有足够的空间容纳接收的段 */
-	     && __tcp_select_window(sk) >= tp->rcv_wnd) ||
+	     && __tcp_select_window(sk) >= tp->rcv_wnd) || /* 并且接收窗口增大了 */
 	    /* We ACK each frame or... */
-	    /* 快速确认模式
+
+	    /* 处于快速确认模式
 	     * 在TCP进行synsent状态处理、发送dupack、接收到窗口之外的数据段、或者收到ECN标志段时，进入快速确认模式
-	     * 持续快速确认模式的时间是有限的，大概可以连续发送8次ack，之后就要退出
+	     * 持续快速确认模式的时间是有限的，一般为接收窗口的一半，之后就要退出
 	     */
 	    tcp_in_quickack_mode(sk) ||
 	    /* We have out of order data. */
-	    /* 乱序一般由丢包造成，在有丢包的情况下，网络可能已经拥塞，需要立即发送ack，通告对方降低发送速率 */
+	    /* 乱序时需要立即发送ack */
 	    (ofo_possible && skb_peek(&tp->out_of_order_queue))) {
 		/* Then ack it now */
-		tcp_send_ack(sk);
+		tcp_send_ack(sk); /* 立即发送ACK  */
 	} else {
 		/* Else, send delayed ack. */
-		tcp_send_delayed_ack(sk);
+		tcp_send_delayed_ack(sk); /* 延迟ACK的发送 */
 	}
 }
 
 static inline void tcp_ack_snd_check(struct sock *sk)
 {
-	if (!inet_csk_ack_scheduled(sk)) {
+	if (!inet_csk_ack_scheduled(sk)) { /* 没有收到数据,不需要回复ACK */
 		/* We sent a data segment already. */
 		return;
 	}
-	__tcp_ack_snd_check(sk, 1);
+	__tcp_ack_snd_check(sk, 1); /* 检查是否需要发送ACK,需要则发送 */
 }
 
 /*
@@ -5771,7 +5801,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 			}
 
-			tcp_event_data_recv(sk, skb);
+			tcp_event_data_recv(sk, skb); /* Delay-ack控制、接收端估算RTT、接收窗口阈值调整 */
 
 			if (TCP_SKB_CB(skb)->ack_seq != tp->snd_una) {
 				/* Well, only one small jumplet in fast path... */
@@ -5821,8 +5851,8 @@ step5:
 	/* step 7: process the segment text */
 	tcp_data_queue(sk, skb);
 
-	tcp_data_snd_check(sk);
-	tcp_ack_snd_check(sk);
+	tcp_data_snd_check(sk); /* 检查是否需要发送数据，以及是否需要扩大发送缓存 */
+	tcp_ack_snd_check(sk);  /* 发送对数据的ACK */
 	return 0;
 
 csum_error:

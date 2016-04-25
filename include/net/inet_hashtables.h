@@ -41,8 +41,8 @@
  * I'll experiment with dynamic table growth later.
  */
 struct inet_ehash_bucket {
-	struct hlist_nulls_head chain;
-	struct hlist_nulls_head twchain;
+	struct hlist_nulls_head chain; 	/* 存放established */
+	struct hlist_nulls_head twchain;/* 存放time_wait */
 };
 
 /* There are a few simple rules, which allow for local port reuse by
@@ -123,10 +123,10 @@ struct inet_hashinfo {
 	 *
 	 * TIME_WAIT sockets use a separate chain (twchain).
 	 */
-	struct inet_ehash_bucket	*ehash;
-	spinlock_t			*ehash_locks;
-	unsigned int			ehash_size;
-	unsigned int			ehash_locks_mask;
+	struct inet_ehash_bucket	*ehash; 	/* 存放established/time_wait状态的tcp_sock的哈希表 */
+	spinlock_t			*ehash_locks; 	/* 用于ehash哈希表的锁 */
+	unsigned int			ehash_size; 	/* ehash的大小 */
+	unsigned int			ehash_locks_mask; /* ehash_locks锁的掩码, 为长度-1 */
 
 	/* Ok, let's try this, I give up, we do need a local binding
 	 * TCP hash as well as the others for fast bind/connect.
@@ -154,6 +154,7 @@ struct inet_hashinfo {
 	atomic_t			bsockets;
 };
 
+/* 根据哈希值获取存放established/time_wait状态sock的哈希链表 */
 static inline struct inet_ehash_bucket *inet_ehash_bucket(
 	struct inet_hashinfo *hashinfo,
 	unsigned int hash)
@@ -161,6 +162,7 @@ static inline struct inet_ehash_bucket *inet_ehash_bucket(
 	return &hashinfo->ehash[hash & (hashinfo->ehash_size - 1)];
 }
 
+/* 根据哈希值获取established/time_wait状态sock哈希链表的锁 */
 static inline spinlock_t *inet_ehash_lockp(
 	struct inet_hashinfo *hashinfo,
 	unsigned int hash)
@@ -353,9 +355,11 @@ static inline struct sock *__inet_lookup(struct net *net,
 					 const int dif)
 {
 	u16 hnum = ntohs(dport);
+	/* 先查找established或time_wait状态 */
 	struct sock *sk = __inet_lookup_established(net, hashinfo,
 				saddr, sport, daddr, hnum, dif);
 
+	/* 再查找listening状态 */
 	return sk ? : __inet_lookup_listener(net, hashinfo, daddr, hnum, dif);
 }
 

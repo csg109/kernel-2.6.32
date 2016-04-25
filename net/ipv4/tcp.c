@@ -1193,17 +1193,25 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 	int time_to_ack = 0;
 
 #if TCP_DEBUG
-	struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
-
+	struct sk_buff *skb = skb_peek(&sk->sk_receive_queue); /* 获取接收队列的头一个数据段 */
+	/* 这里检查在发送队列中，已复制到用户空间的数据段是否被清理了 */
 	WARN(skb && !before(tp->copied_seq, TCP_SKB_CB(skb)->end_seq),
 	     KERN_INFO "cleanup rbuf bug: copied %X seq %X rcvnxt %X\n",
 	     tp->copied_seq, TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt);
 #endif
 
+	/* 如果现在有ACK需要发送，满足以下条件之一则可以立即发送 */
 	if (inet_csk_ack_scheduled(sk)) {
 		const struct inet_connection_sock *icsk = inet_csk(sk);
 		   /* Delayed ACKs frequently hit locked sockets during bulk
 		    * receive. */
+		/* 如果现在有ACK需要发送，满足以下条件之一，就可以立即发送：
+		 * 1. icsk->icsk_ack.blocked为1，之前有Delayed ACK被用户进程阻塞了。
+		 * 2. 接收缓冲区中有一个以上的全尺寸数据段仍然是NOT ACKed (所以经常是收到2个全尺寸段后发送ACK)
+		 * 3. 本次复制到用户空间的数据量大于0，且满足以下条件之一：
+		 *     3.1 设置了ICSK_ACK_PUSHED2标志
+		 *     3.2 设置了ICSK_ACK_PUSHED标志，且处于快速确认模式中
+		 */
 		if (icsk->icsk_ack.blocked ||
 		    /* Once-per-two-segments ACK was not sent by tcp_input.c */
 		    tp->rcv_nxt - tp->rcv_wup > icsk->icsk_ack.rcv_mss ||
@@ -1227,11 +1235,17 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 	 * Even if window raised up to infinity, do not send window open ACK
 	 * in states, where we will not receive more. It is useless.
 	 */
+	/* 如果原来没有ACK需要发送，但是现在的接收窗口显著增大了，也需要立即发送ACK通知对端。
+	 * 这里的显著增大是指：新的接收窗口大小不为0，且比原来接收窗口的剩余量增大了一倍
+	 */
 	if (copied > 0 && !time_to_ack && !(sk->sk_shutdown & RCV_SHUTDOWN)) {
-		__u32 rcv_window_now = tcp_receive_window(tp);
+		__u32 rcv_window_now = tcp_receive_window(tp); /* 当前接收窗口的剩余量 */
 
 		/* Optimize, __tcp_select_window() is not cheap. */
-		if (2*rcv_window_now <= tp->window_clamp) {
+		if (2*rcv_window_now <= tp->window_clamp) { /* 如果当前接收窗口的剩余量小于最大值的一半 */
+			/* 根据剩余的接收缓存，计算新的接收窗口的大小。 
+			 * 因为这次复制，很可能空出不少接收缓存，所以新的接收窗口也会相应增大
+			 */
 			__u32 new_window = __tcp_select_window(sk);
 
 			/* Send ACK now, if this read freed lots of space
@@ -1239,12 +1253,15 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 			 * We can advertise it now, if it is not less than current one.
 			 * "Lots" means "at least twice" here.
 			 */
+			/* 如果新的接收窗口不为0，且比原来接收窗口的剩余量大了一倍以上，
+			 * 就说接收窗口显著增大了,需要立即发送ACK告知对端
+			 */
 			if (new_window && new_window >= 2 * rcv_window_now)
 				time_to_ack = 1;
 		}
 	}
 	if (time_to_ack)
-		tcp_send_ack(sk);
+		tcp_send_ack(sk); /* 发送ACK给对端 */
 }
 
 static void tcp_prequeue_process(struct sock *sk)
@@ -1775,7 +1792,7 @@ void tcp_set_state(struct sock *sk, int state)
 		if (oldstate == TCP_CLOSE_WAIT || oldstate == TCP_ESTABLISHED)
 			TCP_INC_STATS(sock_net(sk), TCP_MIB_ESTABRESETS);
 
-		sk->sk_prot->unhash(sk);
+		sk->sk_prot->unhash(sk);  /* 调用inet_unhash() */
 		if (inet_csk(sk)->icsk_bind_hash &&
 		    !(sk->sk_userlocks & SOCK_BINDPORT_LOCK))
 			inet_put_port(sk);
@@ -2256,14 +2273,21 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 
 	case TCP_QUICKACK:
 		if (!val) {
-			icsk->icsk_ack.pingpong = 1;
+			icsk->icsk_ack.pingpong = 1; /* 禁用快速确认模式 */
 		} else {
-			icsk->icsk_ack.pingpong = 0;
+			icsk->icsk_ack.pingpong = 0; /* 启用快速确认模式 */
+			/* 如果当前有ACK需要发送，就立即发送 */
 			if ((1 << sk->sk_state) &
 			    (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT) &&
 			    inet_csk_ack_scheduled(sk)) {
-				icsk->icsk_ack.pending |= ICSK_ACK_PUSHED;
+				icsk->icsk_ack.pending |= ICSK_ACK_PUSHED; /* 允许在快速模式中立即发送 */
+				
+				/* 通常当接收队列中有数据复制到用户空间时，会调用此函数来判断是否需要立即发送ACK。 
+				 * 这里的用法比较特殊，由于设置了ICSK_ACK_PUSHED标志，且处于快速确认模式中， 
+				 * 必然会立即发送ACK
+				 */
 				tcp_cleanup_rbuf(sk, 1);
+				/* 如果选项的值为偶数，那么立即退出快速确认模式 */
 				if (!(val & 1))
 					icsk->icsk_ack.pingpong = 1;
 			}

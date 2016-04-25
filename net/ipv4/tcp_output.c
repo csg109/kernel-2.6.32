@@ -165,7 +165,12 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 	/* If it is a reply for ato after last received
 	 * packet, enter pingpong mode.
 	 */
-	/* 根据最近接收段的时间，确定是否进入pingpong模式*/
+	/* 如果此时距离最近接收到数据包的时间间隔足够短，
+	 * 说明双方处于你来我往的双向数据传输中，
+	 * 就进入延迟确认模式
+	 * 即如果距离上次接收到数据包的时间在ato内，则进入延迟确认模式
+	 */
+
 	if ((u32)(now - icsk->icsk_ack.lrcvtime) < icsk->icsk_ack.ato)
 		icsk->icsk_ack.pingpong = 1;
 }
@@ -173,8 +178,8 @@ static void tcp_event_data_sent(struct tcp_sock *tp,
 /* Account for an ACK we sent. */
 static inline void tcp_event_ack_sent(struct sock *sk, unsigned int pkts)
 {
-	tcp_dec_quickack_mode(sk, pkts);
-	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
+	tcp_dec_quickack_mode(sk, pkts); /* 更新快速确认模式的ACK额度 */
+	inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK); /* 删除ACK延迟定时器, 并清零icsk->icsk_ack.pending */
 }
 
 /* Determine a window scaling and initial window to offer.
@@ -750,9 +755,13 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	/* 这里计算checksum, 指向tcp_v4_send_check() */
 	icsk->icsk_af_ops->send_check(sk, skb->len, skb);
 
+	/* 当成功发送ACK时，会删除延迟确认定时器，
+	 * 同时清零ACK的发送状态标志icsk->icsk_ack.pending 
+	 */
 	if (likely(tcb->flags & TCPCB_FLAG_ACK))
 		tcp_event_ack_sent(sk, tcp_skb_pcount(skb));
 
+	/* 如果携带数据, 则判断是否需要重启拥塞窗口 以及 是否进入延迟确认模式 */
 	if (skb->len != tcp_header_size)
 		tcp_event_data_sent(tp, skb, sk);
 
@@ -2566,13 +2575,19 @@ void tcp_send_delayed_ack(struct sock *sk)
 	int ato = icsk->icsk_ack.ato;
 	unsigned long timeout;
 
+	/* 设置ato的上限可能为： 
+	 * 1. 500ms 
+	 * 2. 200ms，如果处于延迟确认模式，或者处于快速确认模式且收到过小包 
+	 * 3. RTT，如果有RTT采样 
+	 */
 	if (ato > TCP_DELACK_MIN) {
 		const struct tcp_sock *tp = tcp_sk(sk);
-		int max_ato = HZ / 2;
+		int max_ato = HZ / 2; /* 500ms */
 
+		/* 如果处于延迟确认模式，或者处于快速确认模式且设置了ICSK_ACK_PUSHED标志 */
 		if (icsk->icsk_ack.pingpong ||
 		    (icsk->icsk_ack.pending & ICSK_ACK_PUSHED))
-			max_ato = TCP_DELACK_MAX;
+			max_ato = TCP_DELACK_MAX; /* 200ms */
 
 		/* Slow path, intersegment interval is "high". */
 
@@ -2580,6 +2595,7 @@ void tcp_send_delayed_ack(struct sock *sk)
 		 * Do not use inet_csk(sk)->icsk_rto here, use results of rtt measurements
 		 * directly.
 		 */
+		/* 如果有RTT采样，使用RTT来作为ato的最大值 */
 		if (tp->srtt) {
 			int rtt = max(tp->srtt >> 3, TCP_DELACK_MIN);
 
@@ -2587,16 +2603,20 @@ void tcp_send_delayed_ack(struct sock *sk)
 				max_ato = rtt;
 		}
 
-		ato = min(ato, max_ato);
+		ato = min(ato, max_ato); /* ato不能超过最大值 */
 	}
 
 	/* Stay within the limit we were given */
-	timeout = jiffies + ato;
+	timeout = jiffies + ato; /* 延迟ACK的超时时刻 */
 
 	/* Use new timeout only if there wasn't a older one earlier. */
+	/* 如果之前已经启动了延迟确认定时器了 */
 	if (icsk->icsk_ack.pending & ICSK_ACK_TIMER) {
 		/* If delack timer was blocked or is about to expire,
 		 * send ACK now.
+		 */
+		/* 如果之前延迟确认定时器触发时，因为socket被用户进程锁住而无法发送ACK，那么现在马上发送。 
+		 * 或者如果接收到数据报时，延迟确认定时器已经快要超时了(离现在不到1/4 * ato)，那么马上发送ACK。 
 		 */
 		if (icsk->icsk_ack.blocked ||
 		    time_before_eq(icsk->icsk_ack.timeout, jiffies + (ato >> 2))) {
@@ -2604,12 +2624,14 @@ void tcp_send_delayed_ack(struct sock *sk)
 			return;
 		}
 
+		/* 如果新的超时时间，比之前设定的超时时间晚，那么使用之前设定的超时时间 */
 		if (!time_before(timeout, icsk->icsk_ack.timeout))
 			timeout = icsk->icsk_ack.timeout;
 	}
-	icsk->icsk_ack.pending |= ICSK_ACK_SCHED | ICSK_ACK_TIMER;
-	icsk->icsk_ack.timeout = timeout;
-	sk_reset_timer(sk, &icsk->icsk_delack_timer, timeout);
+	/* 如果还没有启动延迟确认定时器 */
+	icsk->icsk_ack.pending |= ICSK_ACK_SCHED | ICSK_ACK_TIMER; /* 设置ACK需要发送标志、定时器启动标志 */
+	icsk->icsk_ack.timeout = timeout; /* 超时时间 */
+	sk_reset_timer(sk, &icsk->icsk_delack_timer, timeout); /* 启动延迟确认定时器 */
 }
 
 /* This routine sends an ack and also updates the window. */
@@ -2626,16 +2648,18 @@ void tcp_send_ack(struct sock *sk)
 	 * sock.
 	 */
 	buff = alloc_skb(MAX_TCP_HEADER, GFP_ATOMIC);
-	if (buff == NULL) {
-		inet_csk_schedule_ack(sk);
-		inet_csk(sk)->icsk_ack.ato = TCP_ATO_MIN;
+	if (buff == NULL) { /* 分配skb失败 */
+		inet_csk_schedule_ack(sk); /* 设置标志位，表示有ACK需要发送 */
+		inet_csk(sk)->icsk_ack.ato = TCP_ATO_MIN; /* 重置ATO */
+		/* 设置延迟确认定时器，超时时间为200ms */
 		inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
 					  TCP_DELACK_MAX, TCP_RTO_MAX);
 		return;
 	}
 
 	/* Reserve space for headers and prepare control bits. */
-	skb_reserve(buff, MAX_TCP_HEADER);
+	skb_reserve(buff, MAX_TCP_HEADER); /* 设置报文头部的空间 */
+	/* 初始化不携带数据的skb的一些控制字段 */
 	tcp_init_nondata_skb(buff, tcp_acceptable_seq(sk), TCPCB_FLAG_ACK);
 
 	/* Send it off, this clears delayed acks for us. */

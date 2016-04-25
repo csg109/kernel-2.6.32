@@ -233,23 +233,23 @@ struct sock * __inet_lookup_established(struct net *net,
 	/* Optimize here for direct hit, only listening connections can
 	 * have wildcards anyways.
 	 */
-	unsigned int hash = inet_ehashfn(net, daddr, hnum, saddr, sport);
-	unsigned int slot = hash & (hashinfo->ehash_size - 1);
-	struct inet_ehash_bucket *head = &hashinfo->ehash[slot];
+	unsigned int hash = inet_ehashfn(net, daddr, hnum, saddr, sport); /* 计算哈希值 */
+	unsigned int slot = hash & (hashinfo->ehash_size - 1); /* 计算桶索引 */
+	struct inet_ehash_bucket *head = &hashinfo->ehash[slot]; /* 获取established的哈希链表 */
 
 	rcu_read_lock();
 begin:
-	sk_nulls_for_each_rcu(sk, node, &head->chain) {
+	sk_nulls_for_each_rcu(sk, node, &head->chain) { /* 遍历established链表 */
 		if (INET_MATCH(sk, net, hash, acookie,
-					saddr, daddr, ports, dif)) {
+					saddr, daddr, ports, dif)) { /* 匹配各种相同 */
 			if (unlikely(!atomic_inc_not_zero(&sk->sk_refcnt)))
-				goto begintw;
+				goto begintw; /* 去找time_wait */
 			if (unlikely(!INET_MATCH(sk, net, hash, acookie,
-				saddr, daddr, ports, dif))) {
+				saddr, daddr, ports, dif))) { /* 再验证一遍 */
 				sock_put(sk);
 				goto begin;
 			}
-			goto out;
+			goto out; /* 找到了 */
 		}
 	}
 	/*
@@ -262,7 +262,7 @@ begin:
 
 begintw:
 	/* Must check for a TIME_WAIT'er before going to listener hash. */
-	sk_nulls_for_each_rcu(sk, node, &head->twchain) {
+	sk_nulls_for_each_rcu(sk, node, &head->twchain) { /* 遍历time_wait链表 */
 		if (INET_TW_MATCH(sk, net, hash, acookie,
 					saddr, daddr, ports, dif)) {
 			if (unlikely(!atomic_inc_not_zero(&sk->sk_refcnt))) {
@@ -274,7 +274,7 @@ begintw:
 				sock_put(sk);
 				goto begintw;
 			}
-			goto out;
+			goto out; /* 找到time_wait */
 		}
 	}
 	/*
@@ -370,22 +370,23 @@ static inline u32 inet_sk_port_offset(const struct sock *sk)
 					  inet->dport);
 }
 
+/* 将创建的sock插入到established哈希表中 */
 void __inet_hash_nolisten(struct sock *sk)
 {
-	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
+	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; /* 取得tcp_hashinfo */
 	struct hlist_nulls_head *list;
 	spinlock_t *lock;
 	struct inet_ehash_bucket *head;
 
 	WARN_ON(!sk_unhashed(sk));
 
-	sk->sk_hash = inet_sk_ehashfn(sk);
-	head = inet_ehash_bucket(hashinfo, sk->sk_hash);
-	list = &head->chain;
-	lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
+	sk->sk_hash = inet_sk_ehashfn(sk); /* 根据四元组计算哈希值 */
+	head = inet_ehash_bucket(hashinfo, sk->sk_hash); /* 根据哈希值取得哈希桶链表 */
+	list = &head->chain; /* 获取存放eatablished状态的哈希链表 */
+	lock = inet_ehash_lockp(hashinfo, sk->sk_hash); /* 获取哈希链表的锁 */
 
-	spin_lock(lock);
-	__sk_nulls_add_node_rcu(sk, list);
+	spin_lock(lock); /* 修改上锁 */
+	__sk_nulls_add_node_rcu(sk, list); /* 插入rcu的表中 */
 	spin_unlock(lock);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 }
@@ -422,20 +423,20 @@ EXPORT_SYMBOL_GPL(inet_hash);
 
 void inet_unhash(struct sock *sk)
 {
-	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
+	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; /* 获取tcp_hashinfo */
 	spinlock_t *lock;
 	int done;
 
-	if (sk_unhashed(sk))
+	if (sk_unhashed(sk)) /* 如果已经不在表中则直接返回 */
 		return;
 
 	if (sk->sk_state == TCP_LISTEN)
 		lock = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)].lock;
 	else
-		lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
+		lock = inet_ehash_lockp(hashinfo, sk->sk_hash); /* 获取锁 */
 
 	spin_lock_bh(lock);
-	done =__sk_nulls_del_node_init_rcu(sk);
+	done =__sk_nulls_del_node_init_rcu(sk); /* 从表中删除 */
 	if (done)
 		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
 	spin_unlock_bh(lock);

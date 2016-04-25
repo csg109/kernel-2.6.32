@@ -99,7 +99,7 @@ struct tcp_md5sig_key *tcp_v4_md5_do_lookup(struct sock *sk, __be32 addr)
 }
 #endif
 
-struct inet_hashinfo tcp_hashinfo;
+struct inet_hashinfo tcp_hashinfo; /* 存放TCP的sock的哈希表, 在tcp_init()中初始化 */
 
 static inline __u32 tcp_v4_init_sequence(struct sk_buff *skb)
 {
@@ -1450,7 +1450,7 @@ struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 		sock_put(newsk);
 		goto exit;
 	}
-	__inet_hash_nolisten(newsk);
+	__inet_hash_nolisten(newsk); /* 将sk插入表中 */
 
 	return newsk;
 

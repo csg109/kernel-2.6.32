@@ -107,15 +107,43 @@ struct inet_connection_sock {
 	__u8			  icsk_probes_out;		/* 探测次数 */
 	__u16			  icsk_ext_hdr_len;
 	struct {
+		/* ACK的发送状态标志，可以表示四种情况： 
+		 * 1. ICSK_ACK_SCHED：目前有ACK需要发送 
+		 * 2. ICSK_ACK_TIMER：延迟确认定时器已经启动 
+		 * 3. ICSK_ACK_PUSHED：如果处于快速确认模式，允许立即发送ACK 
+		 * 4. ICSK_ACK_PUSHED2：无论是否处于快速确认模式，都可以立即发送ACK
+		 */
 		__u8		  pending;	 /* ACK is pending			   */
+
+		/* 快速确认模式下，最多能够发送多少个ACK，额度用完以后就退出快速确认模式 */
 		__u8		  quick;	 /* Scheduled number of quick acks	   */
-		__u8		  pingpong;	 /* The session is interactive		   *//* 表示这是个交互式的连接 */
+
+		/* 值为1时，为延迟确认模式
+		 * 值为0时，为快速确认模式
+		 * 注意这个标志是不是永久性的，而是动态变更的
+		 */
+		__u8		  pingpong;	 /* The session is interactive		   */
+
+		/* 如果延迟确认定时器触发时，发现socket被用户进程锁住，就把blocked置为1。 
+		 * 之后在接收到新数据、或者将数据复制到用户空间之后、或者再次超时时，会马上发送ACK
+		 */
 		__u8		  blocked;	 /* Delayed ACK was blocked by socket lock */
+
+		/* ACK的超时时间，是一个中间变量，根据接收到数据包的时间间隔来动态调整。 
+		 * 用来计算延迟确认定时器的超时时间timeout
+		 */
 		__u32		  ato;		 /* Predicted tick of soft clock	   */
+
+		/* 迟确认定时器的超时时刻 */
 		unsigned long	  timeout;	 /* Currently scheduled timeout		   */
+
+		/* 最后一次收到带负荷的报文的时间点 */
 		__u32		  lrcvtime;	 /* timestamp of last received data packet */
-						 /* 最后一次接收到带数据的报文的时间 */
+
+		/* 上次收到的数据段大小 */
 		__u16		  last_seg_size; /* Size of last incoming segment	   */
+
+		/* 估算的发送端的MSS */
 		__u16		  rcv_mss;	 /* MSS used for delayed ACK decisions	   */ 
 	} icsk_ack;				/* Delayed ACK的控制模块 */
 	struct {
@@ -151,11 +179,12 @@ extern struct sock *inet_csk_clone(struct sock *sk,
 				   const struct request_sock *req,
 				   const gfp_t priority);
 
+/* ACK的发送状态标志，用于表示是否有ACK需要发送，以及发送的紧急程度 */
 enum inet_csk_ack_state_t {
-	ICSK_ACK_SCHED	= 1,
-	ICSK_ACK_TIMER  = 2,
-	ICSK_ACK_PUSHED = 4,
-	ICSK_ACK_PUSHED2 = 8
+	ICSK_ACK_SCHED	= 1, /* 目前有ACK需要发送 */
+	ICSK_ACK_TIMER  = 2, /* 延迟确认定时器已经启动 */
+	ICSK_ACK_PUSHED = 4, /* 如果处于快速确认模式，允许立即发送ACK */
+	ICSK_ACK_PUSHED2 = 8 /* 无论是否处于快速确认模式，都可以立即发送ACK */
 };
 
 extern void inet_csk_init_xmit_timers(struct sock *sk,
@@ -164,11 +193,13 @@ extern void inet_csk_init_xmit_timers(struct sock *sk,
 				      void (*keepalive_handler)(unsigned long));
 extern void inet_csk_clear_xmit_timers(struct sock *sk);
 
+/* 收到数据设置需要回复ACK */
 static inline void inet_csk_schedule_ack(struct sock *sk)
 {
 	inet_csk(sk)->icsk_ack.pending |= ICSK_ACK_SCHED;
 }
 
+/* 判断是否有ACK需要回复 */
 static inline int inet_csk_ack_scheduled(const struct sock *sk)
 {
 	return inet_csk(sk)->icsk_ack.pending & ICSK_ACK_SCHED;

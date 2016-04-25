@@ -213,11 +213,11 @@ struct sock {
 	 */
 	struct sock_common	__sk_common;
 #define sk_node			__sk_common.skc_node
-#define sk_nulls_node		__sk_common.skc_nulls_node
+#define sk_nulls_node		__sk_common.skc_nulls_node /* 用于插入哈希表的节点 */
 #define sk_refcnt		__sk_common.skc_refcnt
 
 #define sk_copy_start		__sk_common.skc_hash
-#define sk_hash			__sk_common.skc_hash
+#define sk_hash			__sk_common.skc_hash /* 哈希表中桶的哈希值 */
 #define sk_family		__sk_common.skc_family
 #define sk_state		__sk_common.skc_state
 #define sk_reuse		__sk_common.skc_reuse

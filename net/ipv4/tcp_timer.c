@@ -176,6 +176,7 @@ static int tcp_write_timeout(struct sock *sk)
 	return 0;
 }
 
+/* delay-ack定时器处理函数 */
 static void tcp_delack_timer(unsigned long data)
 {
 	struct sock *sk = (struct sock *)data;
@@ -185,6 +186,9 @@ static void tcp_delack_timer(unsigned long data)
 	bh_lock_sock(sk);
 	if (sock_owned_by_user(sk)) {
 		/* Try again later. */
+		/* 如果延迟确认定时器触发时，发现用户进程正在使用此socket，就把blocked置为1。 
+		 * 之后在接收到新数据、或者将数据复制到用户空间之后，会马上发送ACK
+		 */
 		icsk->icsk_ack.blocked = 1;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_DELAYEDACKLOCKED);
 		sk_reset_timer(sk, &icsk->icsk_delack_timer, jiffies + TCP_DELACK_MIN);
@@ -193,38 +197,47 @@ static void tcp_delack_timer(unsigned long data)
 
 	sk_mem_reclaim_partial(sk);
 
+	/* 如果连接已关闭，或者延迟确认定时器并没有被启动，直接返回 */
 	if (sk->sk_state == TCP_CLOSE || !(icsk->icsk_ack.pending & ICSK_ACK_TIMER))
 		goto out;
 
+	/* 如果还没有到超时时刻，则继续计时，直接返回 */
 	if (time_after(icsk->icsk_ack.timeout, jiffies)) {
 		sk_reset_timer(sk, &icsk->icsk_delack_timer, icsk->icsk_ack.timeout);
 		goto out;
 	}
-	icsk->icsk_ack.pending &= ~ICSK_ACK_TIMER;
+	icsk->icsk_ack.pending &= ~ICSK_ACK_TIMER; /* 去除延迟定时器的运行标志 */
 
+	/* 如果prequeue队列不为空，则处理其中的数据包 */
 	if (!skb_queue_empty(&tp->ucopy.prequeue)) {
 		struct sk_buff *skb;
 
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPSCHEDULERFAILED);
 
+		/* 从prequeue队列中取出skb，并从队列中删除 */
 		while ((skb = __skb_dequeue(&tp->ucopy.prequeue)) != NULL)
-			sk_backlog_rcv(sk, skb);
+			sk_backlog_rcv(sk, skb); /* 调用tcp_v4_do_rcv()来处理 */
 
-		tp->ucopy.memory = 0;
+		tp->ucopy.memory = 0; /* 清零prequeue队列消耗的内存 */
 	}
 
+	/* 如果有ACK需要发送 */
 	if (inet_csk_ack_scheduled(sk)) {
+		/* 在快速确认模式中，如果分配skb失败，就无法发送ACK。 
+		 * 此时也会启动延迟确认定时器，超时时间设为200ms。 
+		 * 在这种情况下，如果再次发送失败，就要进行指数退避了
+		 */
 		if (!icsk->icsk_ack.pingpong) {
 			/* Delayed ACK missed: inflate ATO. */
-			icsk->icsk_ack.ato = min(icsk->icsk_ack.ato << 1, icsk->icsk_rto);
-		} else {
+			icsk->icsk_ack.ato = min(icsk->icsk_ack.ato << 1, icsk->icsk_rto); /* 超时时间的指数退避 */
+		} else { /* 如果是处于延迟确认模式 */
 			/* Delayed ACK missed: leave pingpong mode and
 			 * deflate ATO.
 			 */
-			icsk->icsk_ack.pingpong = 0;
-			icsk->icsk_ack.ato      = TCP_ATO_MIN;
+			icsk->icsk_ack.pingpong = 0; /* 切换到快速模式 */
+			icsk->icsk_ack.ato      = TCP_ATO_MIN; /* 重置ATO */
 		}
-		tcp_send_ack(sk);
+		tcp_send_ack(sk); /* 发送ACK */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_DELAYEDACKS);
 	}
 	TCP_CHECK_TIMER(sk);
