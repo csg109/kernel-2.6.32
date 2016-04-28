@@ -242,8 +242,8 @@ struct ubuf_info {
  * the end of the header data, ie. at skb->end.
  */
 struct skb_shared_info {
-	atomic_t	dataref;
-	unsigned short	nr_frags;
+	atomic_t	dataref;	/* 引用计数，用来判断多个skb共用线性区 */
+	unsigned short	nr_frags;	/* frags的个数 */
 	unsigned short	gso_size; 	/* 每个数据段的大小 */
 	/* Warning: this field is not always filled in (UFO)! */
 	unsigned short	gso_segs;	/* skb被分割成多少个数据段 */
@@ -274,9 +274,9 @@ struct skb_shared_info {
 
 
 enum {
-	SKB_FCLONE_UNAVAILABLE,
-	SKB_FCLONE_ORIG,
-	SKB_FCLONE_CLONE,
+	SKB_FCLONE_UNAVAILABLE, /* skb还未使用 */
+	SKB_FCLONE_ORIG,	/* 表示原始的skb */
+	SKB_FCLONE_CLONE,	/* child skb已被使用 */
 };
 
 enum {
@@ -403,14 +403,14 @@ struct sk_buff {
 	__u32			priority; 	/* 优先级，主要用于QOS */
 	kmemcheck_bitfield_begin(flags1);
 	__u8			local_df:1,
-				cloned:1,
+				cloned:1,	/* 置1表示skb被clone过，即共用了线性区 */
 				ip_summed:2,	/* 表示的是L4层校验的状态 
 						 * 可赋值有CHECKSUM_NONE/CHECKSUM_UNNECESSARY/CHECKSUM_COMPLETE/CHECKSUM_PARTIAL 
 						 */
 				nohdr:1,
 				nfctinfo:3;
 	__u8			pkt_type:3,
-				fclone:2,
+				fclone:2, 	/* fclone的标记,SKB_FCLONE_UNAVAILABLE/SKB_FCLONE_ORIG/SKB_FCLONE_CLONE */
 				ipvs_property:1,
 				peeked:1,
 				nf_trace:1;
@@ -470,8 +470,8 @@ struct sk_buff {
 	/* These elements must be at the end, see alloc_skb() for details.  */
 	sk_buff_data_t		tail; 		/* 距离head的长度 */
 	sk_buff_data_t		end;		/* 距离head的长度 */
-	unsigned char		*head,
-				*data;
+	unsigned char		*head,		/* 线性区的起始地址 */
+				*data;		/* 当前数据的起始地址 */
 	unsigned int		truesize; 	/* 整个skb的大小，包括skb本身，以及数据 */
 	atomic_t		users; 		/* skb的引用计数 */
 };

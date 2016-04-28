@@ -177,10 +177,11 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	struct sk_buff *skb;
 	u8 *data;
 
+	/* 选择从skbuff_fclone_cache(fclone分配两个连续的skb和一个atomic)或者skbuff_head_cache上分配 */
 	cache = fclone ? skbuff_fclone_cache : skbuff_head_cache;
 
 	/* Get the HEAD */
-	skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
+	skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node); /* 分配skb结构 */
 	if (!skb)
 		goto out;
 
@@ -189,13 +190,17 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 * aligned memory blocks, unless SLUB/SLAB debug is enabled.
 	 * Both skb->head and skb_shared_info are cache line aligned.
 	 */
-	size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	data = kmalloc_node_track_caller(size, gfp_mask, node);
+	/* 因为skb_shared_info结构是加上线性data之后的,所以size要加上skb_shared_info的大小并对齐 */
+	size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info)); 
+	data = kmalloc_node_track_caller(size, gfp_mask, node); /* 分配数据 */
 	if (!data)
-		goto nodata;
+		goto nodata; /* data分配失败会把skb结构也释放掉，返回失败 */
 	/* kmalloc(size) might give us more room than requested.
 	 * Put skb_shared_info exactly at the end of allocated zone,
 	 * to allow max possible filling before reallocation.
+	 */
+	/* 由于之前size算上了skb_shared_info结构的大小，这里再减掉变成data的大小
+	 * 另外正如上面注释所说,kmalloc分配的可能会大于size,所以需要ksize校正下size 
 	 */
 	size = SKB_WITH_OVERHEAD(ksize(data));
 
@@ -204,23 +209,25 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	 * actually initialise below. Hence, don't put any more fields after
 	 * the tail pointer in struct sk_buff!
 	 */
+	/* 把skb中tail成员之前的数据清零 */
 	memset(skb, 0, offsetof(struct sk_buff, tail));
 	/* Account for allocated memory : skb + skb->head */
-	skb->truesize = SKB_TRUESIZE(size);
-	atomic_set(&skb->users, 1);
+	skb->truesize = SKB_TRUESIZE(size); /* 整个skb的大小，包括数据和skb本身 */
+	atomic_set(&skb->users, 1); /* 计数器置1 */
 	skb->head = data;
 	skb->data = data;
-	skb_reset_tail_pointer(skb);
-	skb->end = skb->tail + size;
+	skb_reset_tail_pointer(skb); /* 设置tail, 就是0 */
+	skb->end = skb->tail + size; /* end为size */
 	kmemcheck_annotate_bitfield(skb, flags1);
 	kmemcheck_annotate_bitfield(skb, flags2);
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
 	skb->mac_header = ~0U;
 #endif
 
+	/* 这里初始化skb_shared_info成员 */
 	/* make sure we initialize shinfo sequentially */
 	shinfo = skb_shinfo(skb);
-	atomic_set(&shinfo->dataref, 1);
+	atomic_set(&shinfo->dataref, 1); /* 计数初始化1 */
 	shinfo->nr_frags  = 0;
 	shinfo->gso_size = 0;
 	shinfo->gso_segs = 0;
@@ -230,16 +237,17 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	skb_frag_list_init(skb);
 	memset(&shinfo->hwtstamps, 0, sizeof(shinfo->hwtstamps));
 
+	/* 如果是fclone则要处理下fclone标记和计数器 */
 	if (fclone) {
-		struct sk_buff *child = skb + 1;
-		atomic_t *fclone_ref = (atomic_t *) (child + 1);
+		struct sk_buff *child = skb + 1; /* 取得连续的下一个skb */
+		atomic_t *fclone_ref = (atomic_t *) (child + 1); /* 取得atomic结构, 该结构为这两个skb的使用计数 */
 
 		kmemcheck_annotate_bitfield(child, flags1);
 		kmemcheck_annotate_bitfield(child, flags2);
-		skb->fclone = SKB_FCLONE_ORIG;
-		atomic_set(fclone_ref, 1);
+		skb->fclone = SKB_FCLONE_ORIG; /* skb为原始skb */
+		atomic_set(fclone_ref, 1); /* 计数置1 */
 
-		child->fclone = SKB_FCLONE_UNAVAILABLE;
+		child->fclone = SKB_FCLONE_UNAVAILABLE; /* child虽然分配了空间但是还未使用 */
 	}
 out:
 	return skb;
@@ -403,9 +411,11 @@ static void skb_clone_fraglist(struct sk_buff *skb)
 
 static void skb_release_data(struct sk_buff *skb)
 {
+	/* 如果没有被clone过或者没有共用的则释放data */
 	if (!skb->cloned ||
 	    !atomic_sub_return(skb->nohdr ? (1 << SKB_DATAREF_SHIFT) + 1 : 1,
 			       &skb_shinfo(skb)->dataref)) {
+		/* 释放所有的page */
 		if (skb_shinfo(skb)->nr_frags) {
 			int i;
 			for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
@@ -424,10 +434,11 @@ static void skb_release_data(struct sk_buff *skb)
 				uarg->callback(uarg);
 		}
 
+		/* 释放frag_list中的skb */
 		if (skb_has_frags(skb))
 			skb_drop_fraglist(skb);
 
-		kfree(skb->head);
+		kfree(skb->head); /* 释放线性空间 */
 	}
 }
 
@@ -440,26 +451,29 @@ static void kfree_skbmem(struct sk_buff *skb)
 	atomic_t *fclone_ref;
 
 	switch (skb->fclone) {
+	/* 如果没有使用fclone则从skbuff_head_cache释放 */
 	case SKB_FCLONE_UNAVAILABLE:
 		kmem_cache_free(skbuff_head_cache, skb);
 		break;
 
+	/* 如果是fclone的原始skb, fclone计数器减一, 如果减为0则释放fclone */
 	case SKB_FCLONE_ORIG:
-		fclone_ref = (atomic_t *) (skb + 2);
+		fclone_ref = (atomic_t *) (skb + 2); /* 获取fclone计数器 */
 		if (atomic_dec_and_test(fclone_ref))
 			kmem_cache_free(skbuff_fclone_cache, skb);
 		break;
 
+	/* 如果是fclone的clone skb, 把clone skb置为未用,fclone计数器减一,如果减为0则释放fclone */
 	case SKB_FCLONE_CLONE:
-		fclone_ref = (atomic_t *) (skb + 1);
-		other = skb - 1;
+		fclone_ref = (atomic_t *) (skb + 1); /* 获取计数器 */
+		other = skb - 1; /* 获取原始skb */
 
 		/* The clone portion is available for
 		 * fast-cloning again.
 		 */
-		skb->fclone = SKB_LONE_UNAVAILABLE;
+		skb->fclone = SKB_LONE_UNAVAILABLE; /* 标记为未使用 */
 
-		if (atomic_dec_and_test(fclone_ref))
+		if (atomic_dec_and_test(fclone_ref)) /* fclone计数器减一 */
 			kmem_cache_free(skbuff_fclone_cache, other);
 		break;
 	}
@@ -473,7 +487,7 @@ static void skb_release_head_state(struct sk_buff *skb)
 #endif
 	if (skb->destructor) {
 		WARN_ON(in_irq());
-		skb->destructor(skb);  /* 调用sock_wfree() */
+		skb->destructor(skb);  /* 对外发送调用sock_wfree() */
 	}
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	nf_conntrack_put(skb->nfct);
@@ -495,7 +509,7 @@ static void skb_release_head_state(struct sk_buff *skb)
 static void skb_release_all(struct sk_buff *skb)
 {
 	skb_release_head_state(skb);
-	skb_release_data(skb);
+	skb_release_data(skb); /* 释放所有data */
 }
 
 /**
@@ -509,8 +523,8 @@ static void skb_release_all(struct sk_buff *skb)
 
 void __kfree_skb(struct sk_buff *skb)
 {
-	skb_release_all(skb);
-	kfree_skbmem(skb);
+	skb_release_all(skb); 	/* 释放数据 */
+	kfree_skbmem(skb);  	/* 释放skb结构 */
 }
 EXPORT_SYMBOL(__kfree_skb);
 
@@ -525,12 +539,14 @@ void kfree_skb(struct sk_buff *skb)
 {
 	if (unlikely(!skb))
 		return;
+	/* skb计数器必须为1才能free */
 	if (likely(atomic_read(&skb->users) == 1))
 		smp_rmb();
+	/* 否则计数器减1后返回 */
 	else if (likely(!atomic_dec_and_test(&skb->users)))
 		return;
 	trace_kfree_skb(skb, __builtin_return_address(0));
-	__kfree_skb(skb);
+	__kfree_skb(skb); /* free的具体工作 */
 }
 EXPORT_SYMBOL(kfree_skb);
 
@@ -650,6 +666,7 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
  * You should not add any new code to this function.  Add it to
  * __copy_skb_header above instead.
  */
+/* 复制skb结构 */
 static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 {
 #define C(x) n->x = skb->x
@@ -663,7 +680,7 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 	C(mac_len);
 	C(rxhash);
 	n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
-	n->cloned = 1;
+	n->cloned = 1; /* 被clone过 */
 	n->nohdr = 0;
 	n->destructor = NULL;
 	C(tail);
@@ -673,8 +690,8 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 	C(truesize);
 	atomic_set(&n->users, 1);
 
-	atomic_inc(&(skb_shinfo(skb)->dataref));
-	skb->cloned = 1;
+	atomic_inc(&(skb_shinfo(skb)->dataref)); /* 增加skb_shared_info计数 */
+	skb->cloned = 1; /* 被clone过 */
 
 	return n;
 #undef C
@@ -755,7 +772,7 @@ static int skb_copy_ubufs(struct sk_buff *skb, gfp_t gfp_mask)
  *	If this function is called from an interrupt gfp_mask() must be
  *	%GFP_ATOMIC.
  */
-
+/* clone一个skb,data线性区共用 */
 struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 {
 	struct sk_buff *n;
@@ -767,13 +784,14 @@ struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 	}
 
 	n = skb + 1;
+	/* 如果是原始skb且child skb还未被使用 */
 	if (skb->fclone == SKB_FCLONE_ORIG &&
 	    n->fclone == SKB_FCLONE_UNAVAILABLE) {
 		atomic_t *fclone_ref = (atomic_t *) (n + 1);
-		n->fclone = SKB_FCLONE_CLONE;
-		atomic_inc(fclone_ref);
-	} else {
-		n = kmem_cache_alloc(skbuff_head_cache, gfp_mask);
+		n->fclone = SKB_FCLONE_CLONE; /* 设置child skb已被使用 */
+		atomic_inc(fclone_ref); /* 增加计数器，加完为2 */
+	} else { /* 这里说明不能使用现成的fclone的skb, 那么就分配一个skb */
+		n = kmem_cache_alloc(skbuff_head_cache, gfp_mask); /* 分配skb */
 		if (!n)
 			return NULL;
 
@@ -782,7 +800,7 @@ struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 		n->fclone = SKB_FCLONE_UNAVAILABLE;
 	}
 
-	return __skb_clone(n, skb);
+	return __skb_clone(n, skb); /* 执行clone的具体操作 */
 }
 EXPORT_SYMBOL(skb_clone);
 
