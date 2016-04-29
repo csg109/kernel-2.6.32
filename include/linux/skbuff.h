@@ -138,18 +138,19 @@ struct sk_buff;
 /* To allow 64K frame to be packed as single skb without frag_list. Since
  * GRO uses frags we allocate at least 16 regardless of page size.
  */
-#if (65536/PAGE_SIZE + 2) < 16
+#if (65536/PAGE_SIZE + 2) < 16 /* 18 < 16 */
 #define MAX_SKB_FRAGS 16UL
 #else
-#define MAX_SKB_FRAGS (65536/PAGE_SIZE + 2)
+/* 允许小于64K的数据不用分段，即不适用frag_list */
+#define MAX_SKB_FRAGS (65536/PAGE_SIZE + 2) /* 为18 */
 #endif
 
 typedef struct skb_frag_struct skb_frag_t;
 
 struct skb_frag_struct {
-	struct page *page;
-	__u32 page_offset;
-	__u32 size;
+	struct page *page; /* 指向的页,该页的虚拟地可用page_address()得到 */
+	__u32 page_offset; /* 数据起始在该页的偏移 */
+	__u32 size;	   /* 该页中数据的长度 */
 };
 
 static inline unsigned int skb_frag_size(const skb_frag_t *frag)
@@ -243,16 +244,20 @@ struct ubuf_info {
  */
 struct skb_shared_info {
 	atomic_t	dataref;	/* 引用计数，用来判断多个skb共用线性区 */
-	unsigned short	nr_frags;	/* frags的个数 */
+	unsigned short	nr_frags;	/* frags的个数, 即sk_buff分页段的数目 */
 	unsigned short	gso_size; 	/* 每个数据段的大小 */
 	/* Warning: this field is not always filled in (UFO)! */
 	unsigned short	gso_segs;	/* skb被分割成多少个数据段 */
 	unsigned short  gso_type;
 	__be32          ip6_frag_id;
 	union skb_shared_tx tx_flags;
+	/* 指向其分段列表，
+	 * 此sk_buff的总长度为frag_list链表中每个分段长度(skb->len)的和,再加上原始的sk_buff的长度 
+	 * 通过此域可进行报文分段
+	 */
 	struct sk_buff	*frag_list;	/* 分割后的数据包列表 */
 	struct skb_shared_hwtstamps hwtstamps;
-	skb_frag_t	frags[MAX_SKB_FRAGS];
+	skb_frag_t	frags[MAX_SKB_FRAGS]; /* 分段的数组，包含sk_buff的分页数据 */
 	/* Intermediate layers must ensure that destructor_arg
 	 * remains valid until skb destructor */
 	void *		destructor_arg;
@@ -381,10 +386,16 @@ struct sk_buff {
 	 */
 	char			cb[48]; 	/* 保存每层的控制信息 */
 
-	/* 这个长度表示当前的skb中的数据的长度，这个长度即包括buf中的数据也包括切片的数据，
-	 * 也就是保存在skb_shared_info中的数据。这个值是会随着从一层到另一层而改变的 */
+	/* 这个长度表示当前的skb中的数据的长度，
+	 * 包括线性空间的数据也包括切片的数据，也就是保存在skb_shared_info中的数据。
+	 * 这个值是会随着从一层到另一层而改变的 
+	 */
 	unsigned int		len, 	
-				data_len; /* 这个长度只表示切片数据的长度，也就是skb_shared_info中的长度 */
+
+	/* 表示切片数据的长度，也就是skb_shared_info中的长度,
+	 * 所以线性数据的长度为：skb->len - skb->data_len
+	 */
+				data_len; 
 	__u16			mac_len, /* 这个长度表示mac头的长度(2层的头的长度) */
 				hdr_len; /* 这个主要用于clone的时候，它表示clone的skb的头的长度 */
 	/* 校验相关的域 */
@@ -464,12 +475,12 @@ struct sk_buff {
 #ifndef __GENKSYMS__
 	__u16			rxhash;
 #endif
-	sk_buff_data_t		transport_header; 	/* 传输层的头 */
-	sk_buff_data_t		network_header; 	/* 网络层的头 */
-	sk_buff_data_t		mac_header; 		/* 链路层的头 */
+	sk_buff_data_t		transport_header; 	/* 传输层协议头 */
+	sk_buff_data_t		network_header; 	/* 网络层协议头 */
+	sk_buff_data_t		mac_header; 		/* 链路层协议头 */
 	/* These elements must be at the end, see alloc_skb() for details.  */
-	sk_buff_data_t		tail; 		/* 距离head的长度 */
-	sk_buff_data_t		end;		/* 距离head的长度 */
+	sk_buff_data_t		tail; 		/* 线性区的数据末尾距离head的长度 */
+	sk_buff_data_t		end;		/* 线性区结尾距离head的长度 */
 	unsigned char		*head,		/* 线性区的起始地址 */
 				*data;		/* 当前数据的起始地址 */
 	unsigned int		truesize; 	/* 整个skb的大小，包括skb本身，以及数据 */
@@ -1143,11 +1154,11 @@ static inline int skb_pagelen(const struct sk_buff *skb)
 static inline void __skb_fill_page_desc(struct sk_buff *skb, int i,
 					struct page *page, int off, int size)
 {
-	skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+	skb_frag_t *frag = &skb_shinfo(skb)->frags[i]; /* 获取下一个未用的frag */
 
-	frag->page		  = page;
-	frag->page_offset	  = off;
-	skb_frag_size_set(frag, size);
+	frag->page		  = page; /* 设置页地址 */
+	frag->page_offset	  = off;  /* 设置数据偏移 */
+	skb_frag_size_set(frag, size);	  /* 设置数据长度 */
 }
 
 /**
@@ -1167,8 +1178,8 @@ static inline void __skb_fill_page_desc(struct sk_buff *skb, int i,
 static inline void skb_fill_page_desc(struct sk_buff *skb, int i,
 				      struct page *page, int off, int size)
 {
-	__skb_fill_page_desc(skb, i, page, off, size);
-	skb_shinfo(skb)->nr_frags = i + 1;
+	__skb_fill_page_desc(skb, i, page, off, size); /* 设置skb分片 */
+	skb_shinfo(skb)->nr_frags = i + 1; /* 累加分片个数 */
 }
 
 extern void skb_add_rx_frag(struct sk_buff *skb, int i, struct page *page,
@@ -1851,9 +1862,10 @@ static inline int skb_add_data(struct sk_buff *skb,
 			skb->csum = csum_block_add(skb->csum, csum, off);
 			return 0;
 		}
-	} else if (!copy_from_user(skb_put(skb, copy), from, copy))
+	} else if (!copy_from_user(skb_put(skb, copy), from, copy)) /* 直接拷贝到线性区 */
 		return 0;
 
+	/* 如果失败需要还原tail和len,因为上面调用了skb_put */
 	__skb_trim(skb, off);
 	return -EFAULT;
 }

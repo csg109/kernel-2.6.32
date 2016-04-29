@@ -994,7 +994,7 @@ new_segment:
 				/* We have some space in skb head. Superb! */
 				if (copy > skb_tailroom(skb))
 					copy = skb_tailroom(skb);
-				if ((err = skb_add_data(skb, from, copy)) != 0)
+				if ((err = skb_add_data(skb, from, copy)) != 0) /* 拷贝数据 */
 					goto do_fault;
 			} else { /* 如果skb的线性数据区已经用完了，那么就使用分页区 */
 				int merge = 0;
@@ -1002,6 +1002,7 @@ new_segment:
 				struct page *page = TCP_PAGE(sk);
 				int off = TCP_OFF(sk);
 
+				/* 如果之前的分片还有空间，那么把数据继续加到原来页上 */
 				if (skb_can_coalesce(skb, i, page, off) &&
 				    off != PAGE_SIZE) {
 					/* We can extend the last page
@@ -1014,9 +1015,10 @@ new_segment:
 					 * do this because interface is non-SG,
 					 * or because all the page slots are
 					 * busy. */
-					tcp_mark_push(tp, skb);
+					tcp_mark_push(tp, skb); /* 加上PSH标记 */
 					goto new_segment;
 				} else if (page) {
+					/* 如果该分页的剩余空间已被用掉, 那么后续要申请新页了 */
 					if (off == PAGE_SIZE) {
 						put_page(page);
 						TCP_PAGE(sk) = page = NULL;
@@ -1025,12 +1027,15 @@ new_segment:
 				} else
 					off = 0;
 
+				/* 拷贝大小不能超过页剩余大小 */
 				if (copy > PAGE_SIZE - off)
 					copy = PAGE_SIZE - off;
 
+				/* 判断内存压力 */
 				if (!sk_wmem_schedule(sk, copy))
 					goto wait_for_memory;
 
+				/* page为空说明需要分配一个新页 */
 				if (!page) {
 					/* Allocate new cache page. */
 					if (!(page = sk_stream_alloc_page(sk)))
@@ -1039,9 +1044,10 @@ new_segment:
 
 				/* Time to copy data. We are close to
 				 * the end! */
+				/* 把数据拷贝到page中, 需要的话计算数据checksum */
 				err = skb_copy_to_page(sk, from, skb, page,
 						       off, copy);
-				if (err) {
+				if (err) { /* 拷贝失败的话先把新的页给sk防止泄漏 */
 					/* If this page was new, give it to the
 					 * socket so it does not get leaked.
 					 */
@@ -1053,13 +1059,16 @@ new_segment:
 				}
 
 				/* Update the skb. */
+				/* 数据直接加到原来分页上后，只需要调整分页的数据长度 */
 				if (merge) {
 					skb_shinfo(skb)->frags[i - 1].size +=
 									copy;
 				} else {
+					/* 这里将page与skb的分片关联 */
 					skb_fill_page_desc(skb, i, page, off, copy);
 					if (TCP_PAGE(sk)) {
 						get_page(page);
+					/* 如果该分页还有空间则记录到sk->sk_sndmsg_page,之后数据可以继续追加 */
 					} else if (off + copy < PAGE_SIZE) {
 						get_page(page);
 						TCP_PAGE(sk) = page;

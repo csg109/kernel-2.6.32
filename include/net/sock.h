@@ -1369,6 +1369,7 @@ static inline int skb_copy_to_page(struct sock *sk, char __user *from,
 				   struct sk_buff *skb, struct page *page,
 				   int off, int copy)
 {
+	/* 需要协议栈计算checksum，边拷贝边计算 */
 	if (skb->ip_summed == CHECKSUM_NONE) {
 		int err = 0;
 		__wsum csum = csum_and_copy_from_user(from,
@@ -1377,14 +1378,15 @@ static inline int skb_copy_to_page(struct sock *sk, char __user *from,
 		if (err)
 			return err;
 		skb->csum = csum_block_add(skb->csum, csum, skb->len);
+	/* 由网卡计算checksum，直接拷贝就行 */
 	} else if (copy_from_user(page_address(page) + off, from, copy))
 		return -EFAULT;
 
-	skb->len	     += copy;
-	skb->data_len	     += copy;
-	skb->truesize	     += copy;
-	sk->sk_wmem_queued   += copy;
-	sk_mem_charge(sk, copy);
+	skb->len	     += copy; /* 增加总数据长度 */
+	skb->data_len	     += copy; /* 增加分片中的数据长度 */
+	skb->truesize	     += copy; /* 增加总长度 */
+	sk->sk_wmem_queued   += copy; /* 增加sk中已用发送缓存大小 */
+	sk_mem_charge(sk, copy);      /* 减小预分配大小 */
 	return 0;
 }
 
@@ -1594,7 +1596,7 @@ static inline struct page *sk_stream_alloc_page(struct sock *sk)
 	page = alloc_pages(sk->sk_allocation, 0);
 	if (!page) {
 		sk->sk_prot->enter_memory_pressure(sk);
-		sk_stream_moderate_sndbuf(sk);
+		sk_stream_moderate_sndbuf(sk); /* 分配失败需要调整发送缓存 */
 	}
 	return page;
 }

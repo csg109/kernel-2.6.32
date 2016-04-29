@@ -772,7 +772,7 @@ static int skb_copy_ubufs(struct sk_buff *skb, gfp_t gfp_mask)
  *	If this function is called from an interrupt gfp_mask() must be
  *	%GFP_ATOMIC.
  */
-/* clone一个skb,data线性区共用 */
+/* clone一个skb,data共用 */
 struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 {
 	struct sk_buff *n;
