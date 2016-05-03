@@ -690,7 +690,7 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 			 * Make sure that we have exactly size bytes
 			 * available to the caller, no more, no less.
 			 */
-			skb_reserve(skb, skb_tailroom(skb) - size);
+			skb_reserve(skb, skb_tailroom(skb) - size); /* 把剩余空间预留给首部 */
 			return skb;
 		}
 		__kfree_skb(skb);

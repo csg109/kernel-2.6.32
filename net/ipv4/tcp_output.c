@@ -878,51 +878,57 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 	int nlen;
 	u8 flags;
 
-	BUG_ON(len > skb->len);
+	BUG_ON(len > skb->len); /* 切片大小不能超过skb数据大小 */
 
-	nsize = skb_headlen(skb) - len;
+	nsize = skb_headlen(skb) - len; /* nsize为下一个skb要分配的线性空间大小 */
 	if (nsize < 0)
 		nsize = 0;
 
+	/* 如果skb被clone过，即数据空间共享，并且含有非线性空间
+	 * 那么使用pskb_expand_head先复制单独的线性空间
+	 */
 	if (skb_cloned(skb) &&
 	    skb_is_nonlinear(skb) &&
 	    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
 		return -ENOMEM;
 
 	/* Get a new skb... force flag on. */
+	/* 分配一个新的skb */
 	buff = sk_stream_alloc_skb(sk, nsize, GFP_ATOMIC);
 	if (buff == NULL)
 		return -ENOMEM; /* We'll just try again later. */
 
-	sk->sk_wmem_queued += buff->truesize;
-	sk_mem_charge(sk, buff->truesize);
-	nlen = skb->len - len - nsize;
+	sk->sk_wmem_queued += buff->truesize; /* 增加sk已分配 */
+	sk_mem_charge(sk, buff->truesize); /* 减小sk预分配 */
+	nlen = skb->len - len - nsize; /* nlen为下个skb非线性大小 */
 	buff->truesize += nlen;
 	skb->truesize -= nlen;
 
 	/* Correct the sequence numbers. */
-	TCP_SKB_CB(buff)->seq = TCP_SKB_CB(skb)->seq + len;
-	TCP_SKB_CB(buff)->end_seq = TCP_SKB_CB(skb)->end_seq;
-	TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(buff)->seq;
+	TCP_SKB_CB(buff)->seq = TCP_SKB_CB(skb)->seq + len; /* 下个skb的seq */
+	TCP_SKB_CB(buff)->end_seq = TCP_SKB_CB(skb)->end_seq; /* 下个skb的end_seq */
+	TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(buff)->seq; /* 原skb的end_seq */
 
 	/* PSH and FIN should only be set in the second packet. */
 	flags = TCP_SKB_CB(skb)->flags;
-	TCP_SKB_CB(skb)->flags = flags & ~(TCPCB_FLAG_FIN | TCPCB_FLAG_PSH);
+	TCP_SKB_CB(skb)->flags = flags & ~(TCPCB_FLAG_FIN | TCPCB_FLAG_PSH); /* 原skb需要去掉FIN和PSH标志 */
 	TCP_SKB_CB(buff)->flags = flags;
 	TCP_SKB_CB(buff)->sacked = TCP_SKB_CB(skb)->sacked;
 
+	/* 如果skb没有分片，即是线性的 并且数据部分的checksum需要协议计算 */	
 	if (!skb_shinfo(skb)->nr_frags && skb->ip_summed != CHECKSUM_PARTIAL) {
 		/* Copy and checksum data tail into the new buffer. */
+		/* 将skb线性空间分割后剩余的数据拷贝到下个skb的线性空间并计算checksum */
 		buff->csum = csum_partial_copy_nocheck(skb->data + len,
 						       skb_put(buff, nsize),
 						       nsize, 0);
 
-		skb_trim(skb, len);
+		skb_trim(skb, len); /* 将skb数据长度设置为len */
 
 		skb->csum = csum_block_sub(skb->csum, buff->csum, len);
 	} else {
-		skb->ip_summed = CHECKSUM_PARTIAL;
-		skb_split(skb, buff, len);
+		skb->ip_summed = CHECKSUM_PARTIAL; /* 由硬件计算checksum */
+		skb_split(skb, buff, len); /* 将skb数据分割转移到下个skb中 */
 	}
 
 	buff->ip_summed = skb->ip_summed;
@@ -936,11 +942,15 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 	old_factor = tcp_skb_pcount(skb);
 
 	/* Fix up tso_factor for both original and new SKB.  */
+	/* 修复下分段 */
 	tcp_set_skb_tso_segs(sk, skb, mss_now);
 	tcp_set_skb_tso_segs(sk, buff, mss_now);
 
 	/* If this packet has been sent out already, we must
 	 * adjust the various packet counters.
+	 */
+	/* 如果skb已经发送出去了，那么可能因为分割后pcount段数不一致，
+	 * 这时需要调整tp中的成员，比如packets_out/sacked_out等等
 	 */
 	if (!before(tp->snd_nxt, TCP_SKB_CB(buff)->end_seq)) {
 		int diff = old_factor - tcp_skb_pcount(skb) -
@@ -952,7 +962,7 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 
 	/* Link BUFF into the send queue. */
 	skb_header_release(buff);
-	tcp_insert_write_queue_after(skb, buff, sk);
+	tcp_insert_write_queue_after(skb, buff, sk); /* 把buff插入到skb后面 */
 
 	return 0;
 }
@@ -967,6 +977,7 @@ static void __pskb_trim_head(struct sk_buff *skb, int len)
 
 	eat = len;
 	k = 0;
+	/* 把截掉的分页put_gage掉，并把后面的分页往前挪 */
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		if (skb_shinfo(skb)->frags[i].size <= eat) {
 			put_page(skb_shinfo(skb)->frags[i].page);
@@ -981,9 +992,9 @@ static void __pskb_trim_head(struct sk_buff *skb, int len)
 			k++;
 		}
 	}
-	skb_shinfo(skb)->nr_frags = k;
+	skb_shinfo(skb)->nr_frags = k; /* 新的分页个数 */
 
-	skb_reset_tail_pointer(skb);
+	skb_reset_tail_pointer(skb); /* 线性空间长度现在为0了 */
 	skb->data_len -= len;
 	skb->len = skb->data_len;
 }
@@ -991,13 +1002,15 @@ static void __pskb_trim_head(struct sk_buff *skb, int len)
 /* Remove acked data from a packet in the transmit queue. */
 int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 {
+	/* 如果skb被clone过，先使用pskb_expand_head使得线性空间独立 */
 	if (skb_cloned(skb) && pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
 		return -ENOMEM;
 
 	/* If len == headlen, we avoid __skb_pull to preserve alignment. */
+	/* 如果截掉的数据小于线性长度，直接改变data和len即可 */
 	if (unlikely(len < skb_headlen(skb)))
 		__skb_pull(skb, len);
-	else
+	else /* 截掉数据超过线性空间，还需要处理分页 */
 		__pskb_trim_head(skb, len - skb_headlen(skb));
 
 	TCP_SKB_CB(skb)->seq += len;
@@ -1360,6 +1373,7 @@ static int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
 	u8 flags;
 
 	/* All of a TSO frame must be composed of paged data.  */
+	/* 如果含有线性的数据则直接调用tcp_fragment */
 	if (skb->len != skb->data_len)
 		return tcp_fragment(sk, skb, len, mss_now);
 
@@ -1914,32 +1928,39 @@ u32 __tcp_select_window(struct sock *sk)
 }
 
 /* Collapses two adjacent SKB's during retransmission. */
+/* 将skb与下一个skb合并(两个都是小包) */
 static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct sk_buff *next_skb = tcp_write_queue_next(sk, skb);
+	struct sk_buff *next_skb = tcp_write_queue_next(sk, skb); /* 下一个skb */
 	int skb_size, next_skb_size;
 
 	skb_size = skb->len;
 	next_skb_size = next_skb->len;
 
+	/* 这两个skb都不能超过一个MSS */
 	BUG_ON(tcp_skb_pcount(skb) != 1 || tcp_skb_pcount(next_skb) != 1);
 
+	/* 如果next_skb正好是highest_sack指向，则改为skb */
 	tcp_highest_sack_combine(sk, next_skb, skb);
 
+	/* 把next_skb从链表中除去 */
 	tcp_unlink_write_queue(next_skb, sk);
 
+	/* 把next_skb的数据拷贝到skb的线性空间中 */
 	skb_copy_from_linear_data(next_skb, skb_put(skb, next_skb_size),
 				  next_skb_size);
 
+	/* 如果next_skb由硬件计算checksum，则skb也需要硬件计算 */
 	if (next_skb->ip_summed == CHECKSUM_PARTIAL)
 		skb->ip_summed = CHECKSUM_PARTIAL;
 
+	/* 如果两个skb都由协议计算checksum, 那么可以相加 */
 	if (skb->ip_summed != CHECKSUM_PARTIAL)
 		skb->csum = csum_block_add(skb->csum, next_skb->csum, skb_size);
 
 	/* Update sequence range on original skb. */
-	TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(next_skb)->end_seq;
+	TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(next_skb)->end_seq; /* 更新end_seq */
 
 	/* Merge over control information. This moves PSH/FIN etc. over */
 	TCP_SKB_CB(skb)->flags |= TCP_SKB_CB(next_skb)->flags;
@@ -1954,9 +1975,9 @@ static void tcp_collapse_retrans(struct sock *sk, struct sk_buff *skb)
 	if (next_skb == tp->retransmit_skb_hint)
 		tp->retransmit_skb_hint = skb;
 
-	tcp_adjust_pcount(sk, next_skb, tcp_skb_pcount(next_skb));
+	tcp_adjust_pcount(sk, next_skb, tcp_skb_pcount(next_skb)); /* 调整tp成员包个数 */
 
-	sk_wmem_free_skb(sk, next_skb);
+	sk_wmem_free_skb(sk, next_skb); /* 将next_skb释放掉 */
 }
 
 /* Check if coalescing SKBs is legal. */
@@ -1994,28 +2015,28 @@ static void tcp_retrans_try_collapse(struct sock *sk, struct sk_buff *to,
 		return;
 
 	tcp_for_write_queue_from_safe(skb, tmp, sk) {
-		if (!tcp_can_collapse(sk, skb))
+		if (!tcp_can_collapse(sk, skb)) /* 判断可以合并的条件 */
 			break;
 
 		space -= skb->len;
 
-		if (first) {
+		if (first) { /* 首个包跳过 */
 			first = 0;
 			continue;
 		}
 
-		if (space < 0)
+		if (space < 0) /* 超出一个MSS，退出 */
 			break;
 		/* Punt if not enough space exists in the first SKB for
 		 * the data in the second
 		 */
-		if (skb->len > skb_tailroom(to))
+		if (skb->len > skb_tailroom(to)) /* 尾部空间不足，退出 */
 			break;
 
-		if (after(TCP_SKB_CB(skb)->end_seq, tcp_wnd_end(tp)))
+		if (after(TCP_SKB_CB(skb)->end_seq, tcp_wnd_end(tp))) /* 超出接收窗口，退出 */
 			break;
 
-		tcp_collapse_retrans(sk, to);
+		tcp_collapse_retrans(sk, to); /* 将下一个skb合并到to中 */
 	}
 }
 
@@ -2043,7 +2064,7 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	    min(sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2), sk->sk_sndbuf))
 		return -EAGAIN;
 
-	if (before(TCP_SKB_CB(skb)->seq, tp->snd_una)) { /* 说明是有一部分数据才需要重传，形如：seq---snd_una---end_seq，前面一半已收到ACK   */
+	if (before(TCP_SKB_CB(skb)->seq, tp->snd_una)) { /* 说明是有一部分数据才需要重传，形如：seq---snd_una---end_seq，前面一半已收到ACK */
 		if (before(TCP_SKB_CB(skb)->end_seq, tp->snd_una)) /* 说明全部ACK，无需重传，BUG */
 			BUG();
 		if (tcp_trim_head(sk, skb, tp->snd_una - TCP_SKB_CB(skb)->seq)) /* 裁掉已经重传过的数据 */
@@ -2072,10 +2093,11 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 
 		if (unlikely(oldpcount > 1)) { /* 说明当前MSS和SKB的分片大小不匹配，需要重新调整 */
 			tcp_init_tso_segs(sk, skb, cur_mss);
-			tcp_adjust_pcount(sk, skb, oldpcount - tcp_skb_pcount(skb));
+			tcp_adjust_pcount(sk, skb, oldpcount - tcp_skb_pcount(skb)); /* pcount变了需要调整tp的成员 */
 		}
 	}
 
+	/* 尝试将小包skb与接下来的小包skb合并成不超过mss的包 */
 	tcp_retrans_try_collapse(sk, skb, cur_mss);
 
 	/* Some Solaris stacks overoptimize and ignore the FIN on a

@@ -243,9 +243,9 @@ struct ubuf_info {
  * the end of the header data, ie. at skb->end.
  */
 struct skb_shared_info {
-	atomic_t	dataref;	/* 引用计数，用来判断多个skb共用线性区 */
+	atomic_t	dataref;	/* 数据引用计数，用来判断多个skb共用数据区 */
 	unsigned short	nr_frags;	/* frags的个数, 即sk_buff分页段的数目 */
-	unsigned short	gso_size; 	/* 每个数据段的大小 */
+	unsigned short	gso_size; 	/* 每个数据段的大小, 即MSS */
 	/* Warning: this field is not always filled in (UFO)! */
 	unsigned short	gso_segs;	/* skb被分割成多少个数据段 */
 	unsigned short  gso_type;
@@ -418,7 +418,7 @@ struct sk_buff {
 				ip_summed:2,	/* 表示的是L4层校验的状态 
 						 * 可赋值有CHECKSUM_NONE/CHECKSUM_UNNECESSARY/CHECKSUM_COMPLETE/CHECKSUM_PARTIAL 
 						 */
-				nohdr:1,
+				nohdr:1,	/* 设置完不能再修改header区域（data） */
 				nfctinfo:3;
 	__u8			pkt_type:3,
 				fclone:2, 	/* fclone的标记,SKB_FCLONE_UNAVAILABLE/SKB_FCLONE_ORIG/SKB_FCLONE_CLONE */
@@ -428,7 +428,7 @@ struct sk_buff {
 	__be16			protocol:16;
 	kmemcheck_bitfield_end(flags1);
 
-	void			(*destructor)(struct sk_buff *skb);  /* 即sock_wfree() */
+	void			(*destructor)(struct sk_buff *skb);  /* tcp对外发送时设置为sock_wfree() */
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	struct nf_conntrack	*nfct;
 	struct sk_buff		*nfct_reasm;
@@ -516,6 +516,7 @@ extern void	       __kfree_skb(struct sk_buff *skb);
 extern struct sk_buff *__alloc_skb(unsigned int size,
 				   gfp_t priority, int fclone, int node);
 extern struct sk_buff *build_skb(void *data);
+/* 分配skb, size长度直接以线性申请 */
 static inline struct sk_buff *alloc_skb(unsigned int size,
 					gfp_t priority)
 {
@@ -709,6 +710,7 @@ static inline struct sk_buff *skb_get(struct sk_buff *skb)
  *	one of multiple shared copies of the buffer. Cloned buffers are
  *	shared data so must not be written to under normal circumstances.
  */
+/* 判断skb是否被clone过, 被skb_clone过的skb共用数据区 */
 static inline int skb_cloned(const struct sk_buff *skb)
 {
 	return skb->cloned &&
@@ -1115,14 +1117,15 @@ static inline struct sk_buff *__skb_dequeue_tail(struct sk_buff_head *list)
 	return skb;
 }
 
-
+/* 判断skb是否线性化，返回0为线性 */
 static inline int skb_is_nonlinear(const struct sk_buff *skb)
 {
 	return skb->data_len;
 }
 
-/* skb->len为skb中线性缓冲区加上切片的总大小(随着协议层变化），skb->data_len为skb切片中的大小，
- * 相减即为该层线性缓冲区的大
+/* 返回线性空间已使用的大小
+ * skb->len为skb中线性缓冲区加上切片的总大小(随着协议层变化），skb->data_len为skb切片中的大小，
+ * 相减即为该层线性缓冲区的大小
  */
 static inline unsigned int skb_headlen(const struct sk_buff *skb)
 {
@@ -1256,6 +1259,7 @@ extern unsigned char *__pskb_pull_tail(struct sk_buff *skb, int delta);
 
 static inline unsigned char *__pskb_pull(struct sk_buff *skb, unsigned int len)
 {
+	/* 超出线性长度的部分先线性化 */
 	if (len > skb_headlen(skb) &&
 	    !__pskb_pull_tail(skb, len - skb_headlen(skb)))
 		return NULL;
@@ -1263,6 +1267,7 @@ static inline unsigned char *__pskb_pull(struct sk_buff *skb, unsigned int len)
 	return skb->data += len;
 }
 
+/* 删除skb的data开始len长度的数据, 若len大于超出线性长度则多余部分先线性化 */
 static inline unsigned char *pskb_pull(struct sk_buff *skb, unsigned int len)
 {
 	return unlikely(len > skb->len) ? NULL : __pskb_pull(skb, len);
@@ -1295,6 +1300,7 @@ static inline unsigned int skb_headroom(const struct sk_buff *skb)
  *
  *	Return the number of bytes of free space at the tail of an sk_buff
  */
+/* 返回线性空间尾部未使用的大小 */
 static inline int skb_tailroom(const struct sk_buff *skb)
 {
 	return skb_is_nonlinear(skb) ? 0 : skb->end - skb->tail;
@@ -1490,7 +1496,7 @@ static inline void __skb_trim(struct sk_buff *skb, unsigned int len)
 		return;
 	}
 	skb->len = len;
-	skb_set_tail_pointer(skb, len);
+	skb_set_tail_pointer(skb, len); /* 将tail设置为len */
 }
 
 extern void skb_trim(struct sk_buff *skb, unsigned int len);
@@ -1894,6 +1900,7 @@ static inline int __skb_linearize(struct sk_buff *skb)
  *	If there is no free memory -ENOMEM is returned, otherwise zero
  *	is returned and the old skb data released.
  */
+/* 将skb线性化 */
 static inline int skb_linearize(struct sk_buff *skb)
 {
 	return skb_is_nonlinear(skb) ? __skb_linearize(skb) : 0;
