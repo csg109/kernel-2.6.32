@@ -255,7 +255,7 @@ struct tcp_request_sock {
 #endif
 	u32			 	rcv_isn;	/* 客户端的初始序列号 */
 	u32			 	snt_isn;	/* 本端的初始序列号 */
-	u32				snt_synack; /* synack sent time */
+	u32				snt_synack; /* synack sent time *//* 第一个synack回复的时间戳，用来计算RTT */
 };
 
 static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)

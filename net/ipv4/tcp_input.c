@@ -928,7 +928,7 @@ void tcp_enter_cwr(struct sock *sk, const int set_ssthresh)
 		/* 设置TCP_ECN_QUEUE_CWR标志，标识由于收到显式拥塞通知而进入拥塞状态 */
 		TCP_ECN_queue_cwr(tp); 
 
-		tcp_set_ca_state(sk, TCP_CA_CWR); /* 设置当然拥塞状态为CWR */
+		tcp_set_ca_state(sk, TCP_CA_CWR); /* 设置拥塞状态为CWR */
 	}
 }
 
@@ -3418,7 +3418,7 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 		/* 更新记分牌，标志丢失和超时的数据包，增加lost_out */
 		tcp_update_scoreboard(sk, fast_rexmit);
 	tp->prr_delivered += newly_acked_sacked;
-	/* 减小snd_cwnd */
+	/* PRR,减小snd_cwnd */
 	tcp_update_cwnd_in_recovery(sk, newly_acked_sacked, fast_rexmit, flag);
 	tcp_xmit_retransmit_queue(sk);
 }
