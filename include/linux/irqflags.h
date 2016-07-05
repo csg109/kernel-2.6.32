@@ -58,8 +58,10 @@
 
 #define local_irq_enable() \
 	do { trace_hardirqs_on(); raw_local_irq_enable(); } while (0)
+/* 禁用本地硬中断 */
 #define local_irq_disable() \
 	do { raw_local_irq_disable(); trace_hardirqs_off(); } while (0)
+/* 禁用本地硬中断并保存eflags */
 #define local_irq_save(flags)				\
 	do {						\
 		typecheck(unsigned long, flags);	\

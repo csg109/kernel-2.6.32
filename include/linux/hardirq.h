@@ -87,8 +87,10 @@
  * in_softirq - Are we currently processing softirq or have bh disabled?
  * in_serving_softirq - Are we currently processing softirq?
  */
+/* 判断是否处于硬件中断 */
 #define in_irq()		(hardirq_count())
 #define in_softirq()		(softirq_count())
+/* 判断是否处于中断上下文，包括底半部和硬件中断处理过程 */
 #define in_interrupt()		(irq_count())
 #define in_serving_softirq()	(softirq_count() & SOFTIRQ_OFFSET)
 

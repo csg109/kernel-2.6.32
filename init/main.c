@@ -644,7 +644,7 @@ asmlinkage void __init start_kernel(void)
 	prio_tree_init();
 	init_timers();
 	hrtimers_init();
-	softirq_init();
+	softirq_init(); /* ≥ı ºªØ»Ì÷–∂œ */
 	timekeeping_init();
 	time_init();
 	profile_init();

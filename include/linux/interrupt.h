@@ -351,14 +351,14 @@ static inline int disable_irq_wake(unsigned int irq)
  */
 
 enum
-{
-	HI_SOFTIRQ=0,
-	TIMER_SOFTIRQ,
-	NET_TX_SOFTIRQ,
-	NET_RX_SOFTIRQ,
+{	/* 优先级从高到低 */
+	HI_SOFTIRQ=0,		/* 处理高优先级的tasklet */
+	TIMER_SOFTIRQ,		/* 和时钟中断相关的tasklet */
+	NET_TX_SOFTIRQ,		/* 把数据包传送到网卡 */
+	NET_RX_SOFTIRQ, 	/* 从网卡接收数据包 */
 	BLOCK_SOFTIRQ,
 	BLOCK_IOPOLL_SOFTIRQ,
-	TASKLET_SOFTIRQ,
+	TASKLET_SOFTIRQ,	/* 处理常规tasklet */
 	SCHED_SOFTIRQ,
 	HRTIMER_SOFTIRQ,
 	RCU_SOFTIRQ,	/* Preferable RCU should always be the last softirq */
@@ -437,10 +437,12 @@ extern void __send_remote_softirq(struct call_single_data *cp, int cpu,
 struct tasklet_struct
 {
 	struct tasklet_struct *next;
-	unsigned long state;
-	atomic_t count;
-	void (*func)(unsigned long);
-	unsigned long data;
+	unsigned long state; 	/* 状态: TASKLET_STATE_SCHED和TASKLET_STATE_RUN */
+	atomic_t count;		/* 用来控制使能的计数器，只有为0时func才会被执行
+				 * 由tasklet_disable/tasklet_enable控制
+				 */
+	void (*func)(unsigned long); /* tasklet的执行函数 */
+	unsigned long data;	/* func的参数 */
 };
 
 #define DECLARE_TASKLET(name, func, data) \
@@ -453,7 +455,9 @@ struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(1), func, data }
 enum
 {
 	TASKLET_STATE_SCHED,	/* Tasklet is scheduled for execution */
+				/* 表示该tasklet_struct已经被加入本地CPU的tasklet链表待执行 */
 	TASKLET_STATE_RUN	/* Tasklet is running (SMP only) */
+				/* 表示正在执行该tasklet_struct的处理函数 */
 };
 
 #ifdef CONFIG_SMP
@@ -482,6 +486,10 @@ extern void __tasklet_schedule(struct tasklet_struct *t);
 
 static inline void tasklet_schedule(struct tasklet_struct *t)
 {
+	/* 检查并设置TASKLET_STATE_SCHED标志, 
+	 * 如果之前未设置则调用__tasklet_schedule将t加入本地tasklet链表中,
+	 * 并激活软中断
+	 */ 
 	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
 		__tasklet_schedule(t);
 }
@@ -515,6 +523,7 @@ static inline void tasklet_disable_nosync(struct tasklet_struct *t)
 	smp_mb__after_atomic_inc();
 }
 
+/* 暂时禁用该tasklet, 主要是增加count计数器(只有count为0时tasklet的函数才会被执行) */
 static inline void tasklet_disable(struct tasklet_struct *t)
 {
 	tasklet_disable_nosync(t);
@@ -522,6 +531,7 @@ static inline void tasklet_disable(struct tasklet_struct *t)
 	smp_mb();
 }
 
+/* 使能之前被disable的tasklet，主要是减小count计数器, 与tasklet_disable()配对使用 */
 static inline void tasklet_enable(struct tasklet_struct *t)
 {
 	smp_mb__before_atomic_dec();

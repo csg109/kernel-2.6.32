@@ -52,6 +52,7 @@ irq_cpustat_t irq_stat[NR_CPUS] ____cacheline_aligned;
 EXPORT_SYMBOL(irq_stat);
 #endif
 
+/* 软中断向量列表 */
 static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
 
 static DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
@@ -384,12 +385,12 @@ void __tasklet_schedule(struct tasklet_struct *t)
 {
 	unsigned long flags;
 
-	local_irq_save(flags);
+	local_irq_save(flags); /* 禁用本地中断 */
 	t->next = NULL;
-	*__get_cpu_var(tasklet_vec).tail = t;
+	*__get_cpu_var(tasklet_vec).tail = t; /* 将t加入本地CPU链表 */
 	__get_cpu_var(tasklet_vec).tail = &(t->next);
-	raise_softirq_irqoff(TASKLET_SOFTIRQ);
-	local_irq_restore(flags);
+	raise_softirq_irqoff(TASKLET_SOFTIRQ); /* 激活tasklet软中断 */
+	local_irq_restore(flags); /*恢复本地中断 */
 }
 
 EXPORT_SYMBOL(__tasklet_schedule);
@@ -423,33 +424,39 @@ static void tasklet_action(struct softirq_action *a)
 {
 	struct tasklet_struct *list;
 
+	/* 禁用本地中断, 因为中断可能会操作tasklet所以需要禁用硬中断 */
 	local_irq_disable();
-	list = __get_cpu_var(tasklet_vec).head;
-	__get_cpu_var(tasklet_vec).head = NULL;
+	list = __get_cpu_var(tasklet_vec).head; /* 取出本地CPU的tasklet链表 */
+	__get_cpu_var(tasklet_vec).head = NULL; /* 清空tasklet链表 */
 	__get_cpu_var(tasklet_vec).tail = &__get_cpu_var(tasklet_vec).head;
-	local_irq_enable();
+	local_irq_enable(); /* 恢复本地中断 */
 
-	while (list) {
+	while (list) { /* 遍历本地tasklet链表的所有tasklet_struct结构 */
 		struct tasklet_struct *t = list;
 
-		list = list->next;
+		list = list->next; /* 取得下一个 */
 
-		if (tasklet_trylock(t)) {
+		if (tasklet_trylock(t)) { /* 检查并设置TASKLET_STATE_RUN标志 */
+			/* 通过查看tasklet描述符的count字段，检查tasklet是否被禁止 */
 			if (!atomic_read(&t->count)) {
+				/* 清除TASKLET_STATE_SCHED */
 				if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
 					BUG();
-				t->func(t->data);
-				tasklet_unlock(t);
-				continue;
+				t->func(t->data); /* 执行func函数 */
+				tasklet_unlock(t); /* 清除TASKLET_STATE_RUN标志 */
+				continue; /* 下一个 */
 			}
-			tasklet_unlock(t);
+			tasklet_unlock(t); /* 清除TASKLET_STATE_RUN标志 */
 		}
 
+		/* 到这里说明该tasklet_struct没有被执行，
+		 * 所以需要重新加入链表并激活tasklet软中断以便下次继续执行
+		 */
 		local_irq_disable();
 		t->next = NULL;
 		*__get_cpu_var(tasklet_vec).tail = t;
 		__get_cpu_var(tasklet_vec).tail = &(t->next);
-		__raise_softirq_irqoff(TASKLET_SOFTIRQ);
+		__raise_softirq_irqoff(TASKLET_SOFTIRQ); /* 激活tasklet软中断 */
 		local_irq_enable();
 	}
 }
@@ -490,6 +497,7 @@ static void tasklet_hi_action(struct softirq_action *a)
 }
 
 
+/* 初始化一个tasklet_struct */
 void tasklet_init(struct tasklet_struct *t,
 		  void (*func)(unsigned long), unsigned long data)
 {
@@ -706,6 +714,7 @@ void __init softirq_init(void)
 	for_each_possible_cpu(cpu) {
 		int i;
 
+		/* 对tasklet相关percpu变量的初始化 */
 		per_cpu(tasklet_vec, cpu).tail =
 			&per_cpu(tasklet_vec, cpu).head;
 		per_cpu(tasklet_hi_vec, cpu).tail =
@@ -716,6 +725,9 @@ void __init softirq_init(void)
 
 	register_hotcpu_notifier(&remote_softirq_cpu_notifier);
 
+	/* 将tasklet执行函数加入软中断向量中, 
+	 * 这个执行函数会执行tasklet对应一个链表中的所有函数
+	 */
 	open_softirq(TASKLET_SOFTIRQ, tasklet_action);
 	open_softirq(HI_SOFTIRQ, tasklet_hi_action);
 }
