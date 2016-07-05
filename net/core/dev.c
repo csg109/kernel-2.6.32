@@ -2813,7 +2813,7 @@ int __netif_receive_skb(struct sk_buff *skb)
 	}
 #endif
 
-	/* ptype_all 用于sniffer这样的程序。对于注册的sniffer，发送一份拷贝  
+	/* ptype_all用于sniffer这样的程序。对于注册的sniffer，发送一份拷贝  
 	 * 处理ptype_all上所有的 packet_type->func()   
 	 * 如tcpdump */
 	list_for_each_entry_rcu(ptype, &ptype_all, list) {

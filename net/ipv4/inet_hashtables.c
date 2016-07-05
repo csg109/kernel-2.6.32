@@ -151,16 +151,17 @@ static inline int compute_score(struct sock *sk, struct net *net,
 	int score = -1;
 	struct inet_sock *inet = inet_sk(sk);
 
+	/* 同属一个NET 本地端口匹配 且不是纯ipv6 */
 	if (net_eq(sock_net(sk), net) && inet->num == hnum &&
 			!ipv6_only_sock(sk)) {
 		__be32 rcv_saddr = inet->rcv_saddr;
-		score = sk->sk_family == PF_INET ? 1 : 0;
-		if (rcv_saddr) {
+		score = sk->sk_family == PF_INET ? 1 : 0; /* 协议一致得1分 */
+		if (rcv_saddr) { /* 本地绑定地址匹配，加2分 */
 			if (rcv_saddr != daddr)
 				return -1;
 			score += 2;
 		}
-		if (sk->sk_bound_dev_if) {
+		if (sk->sk_bound_dev_if) { /* 网卡匹配，加2分 */
 			if (sk->sk_bound_dev_if != dif)
 				return -1;
 			score += 2;
@@ -193,6 +194,7 @@ begin:
 	result = NULL;
 	hiscore = -1;
 	sk_nulls_for_each_rcu(sk, node, &ilb->head) {
+		/* 遍历这个桶内所有监听sk，选择一个最匹配的（分值最高的） */
 		score = compute_score(sk, net, hnum, daddr, dif);
 		if (score > hiscore) {
 			result = sk;

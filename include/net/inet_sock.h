@@ -162,7 +162,7 @@ struct inet_sock {
 	__u16			cmsg_flags;
 	struct ip_options	*opt;
 	__be16			sport;
-	__u16			id;
+	__u16			id;	/* 记录ip首部的id序号 */
 	__u8			tos;
 	__u8			mc_ttl;
 	__u8			pmtudisc;

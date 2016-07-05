@@ -255,7 +255,7 @@ struct sock {
 	atomic_t		sk_wmem_alloc;	/* 发送缓存中进入ip层的数据包的大小, 也就是在发送过程中的大小 */
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;	/* TCP发送缓冲区大小, 即当前发送缓存的最大限制 */
-	struct sk_buff_head	sk_receive_queue;
+	struct sk_buff_head	sk_receive_queue; /* 接收队列 */
 	struct sk_buff_head	sk_write_queue;	/* 发送队列，保存着从una开始的所有skb */
 #ifdef CONFIG_NET_DMA
 	struct sk_buff_head	sk_async_wait_queue;

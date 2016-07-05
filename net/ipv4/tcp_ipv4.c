@@ -586,20 +586,26 @@ static void tcp_v4_send_reset(struct sock *sk, struct sk_buff *skb)
 	struct net *net;
 
 	/* Never send a reset in response to a reset. */
-	if (th->rst)
+	if (th->rst) /* 对reset包不回复reset */
 		return;
 
 	if (skb_rtable(skb)->rt_type != RTN_LOCAL)
 		return;
 
 	/* Swap the send and the receive. */
-	memset(&rep, 0, sizeof(rep));
+	memset(&rep, 0, sizeof(rep)); /* 先全部清零 */
+	/* 目的地址和源地址对调 */
 	rep.th.dest   = th->source;
 	rep.th.source = th->dest;
 	rep.th.doff   = sizeof(struct tcphdr) / 4;
-	rep.th.rst    = 1;
+	rep.th.rst    = 1; /* RST标志 */
 
-	if (th->ack) {
+	/* 如果导致rst的数据包带有ack,
+	 * 	那么rst数据包的seq为该数据包的ack值,rst的ack值为0且没有ack标志
+	 * 否则(比如对异常SYN的reset)
+	 * 	rst的seq值为0,ack值为对导致rst的数据包的数据的确认
+	 */
+	if (th->ack) { 
 		rep.th.seq = th->ack_seq;
 	} else {
 		rep.th.ack = 1;

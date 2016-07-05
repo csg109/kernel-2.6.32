@@ -96,7 +96,7 @@ int sysctl_tcp_abc __read_mostly;
 
 #define FLAG_DATA		0x01 /* Incoming frame contained data.		*//* 当前的输入帧包含有数据 */
 #define FLAG_WIN_UPDATE		0x02 /* Incoming ACK was a window update.	*//* 当前的ack是一个窗口更新的ack */
-#define FLAG_DATA_ACKED		0x04 /* This ACK acknowledged new data.		*//* 这个ack确认了一些数据 */
+#define FLAG_DATA_ACKED		0x04 /* This ACK acknowledged new data.		*//* 这个ack确认了数据(una被更新) */
 #define FLAG_RETRANS_DATA_ACKED	0x08 /* "" "" some of which was retransmitted.	*//* 这个表示ack确认了一些我们重传的段 */
 #define FLAG_SYN_ACKED		0x10 /* This ACK acknowledged SYN.		*//* 这个ack是对syn的回复 */
 #define FLAG_DATA_SACKED	0x20 /* New SACK.				*//* 新的sack */
@@ -2189,7 +2189,7 @@ int tcp_use_frto(struct sock *sk)
 		return 1;
 
 	/* 以下：
-	 * 如果除了触发RTO的数据包外，在第一个被SACK的数据之前还存在其他被重传过的数据包，那么不使用FRTO
+	 * 如果除了触发RTO的数据包外，还存在其他被重传过的数据包，那么不使用FRTO
 	 * (这种情况说明不只是第一个数据包丢失，可能有多个数据包丢失，那么直接进入RTO)
 	 * 否则使用F-RTO
 	 * */
@@ -2286,6 +2286,9 @@ void tcp_enter_frto(struct sock *sk)
 
 	/* Earlier loss recovery underway (see RFC4138; Appendix B).
 	 * The last condition is necessary at least in tp->frto_counter case.
+	 */
+	/* 如果不是第一次进入F-RTO或者之前是RECOVERY或LOSS状态，
+	 * 则frto_highmark延续之前的high_seq
 	 */
 	if (tcp_is_sackfrto(tp) && (tp->frto_counter ||
 	    ((1 << icsk->icsk_ca_state) & (TCPF_CA_Recovery|TCPF_CA_Loss))) &&
@@ -3926,7 +3929,7 @@ static int tcp_process_frto(struct sock *sk, int flag)
 		 * ( 
 		 *   没有确认或SACK任何数据 
 		 *   或
-		 *   新SACK了数据但不是进入FRTO之后发送的新数据
+		 *   仅SACK了进入FRTO之后发送的新数据(没有SACK之前没有重传过的数据)
 		 * )
 		 * 并且是重复ACK，
 		 * 则进入LOSS状态
@@ -4448,7 +4451,7 @@ static void tcp_reset(struct sock *sk)
 		sk->sk_err = ECONNRESET;
 	}
 
-	if (!sock_flag(sk, SOCK_DEAD))
+	if (!sock_flag(sk, SOCK_DEAD)) 	 /* 如果应用层的socket还在，即sock还有关联socket */
 		sk->sk_error_report(sk); /* 调用sock_def_error_report() */
 
 	tcp_done(sk);

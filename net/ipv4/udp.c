@@ -250,23 +250,23 @@ static inline int compute_score(struct sock *sk, struct net *net, __be32 saddr,
 			!ipv6_only_sock(sk)) {
 		struct inet_sock *inet = inet_sk(sk);
 
-		score = (sk->sk_family == PF_INET ? 1 : 0);
-		if (inet->rcv_saddr) {
+		score = (sk->sk_family == PF_INET ? 1 : 0); /* 协议一致有1分 */
+		if (inet->rcv_saddr) { /* 本地地址一致，加2分 */
 			if (inet->rcv_saddr != daddr)
 				return -1;
 			score += 2;
 		}
-		if (inet->daddr) {
+		if (inet->daddr) { /* 对端地址一致，加2分 */
 			if (inet->daddr != saddr)
 				return -1;
 			score += 2;
 		}
-		if (inet->dport) {
+		if (inet->dport) { /* 对端端口一致，加2分 */
 			if (inet->dport != sport)
 				return -1;
 			score += 2;
 		}
-		if (sk->sk_bound_dev_if) {
+		if (sk->sk_bound_dev_if) { /* 网卡一致，加2分 */
 			if (sk->sk_bound_dev_if != dif)
 				return -1;
 			score += 2;
@@ -285,18 +285,19 @@ static struct sock *__udp4_lib_lookup(struct net *net, __be32 saddr,
 	struct sock *sk, *result;
 	struct hlist_nulls_node *node;
 	unsigned short hnum = ntohs(dport);
-	unsigned int hash = udp_hashfn(net, hnum);
-	struct udp_hslot *hslot = &udptable->hash[hash];
+	unsigned int hash = udp_hashfn(net, hnum); /* 计算哈希值 */
+	struct udp_hslot *hslot = &udptable->hash[hash]; /* 获取哈希桶 */
 	int score, badness;
 
 	rcu_read_lock();
 begin:
 	result = NULL;
 	badness = -1;
-	sk_nulls_for_each_rcu(sk, node, &hslot->head) {
+	sk_nulls_for_each_rcu(sk, node, &hslot->head) { /* 对哈希桶进行遍历 */
+		/* 需要循环所有的sk找到一个最匹配的（分值最高的） */
 		score = compute_score(sk, net, saddr, hnum, sport,
 				      daddr, dport, dif);
-		if (score > badness) {
+		if (score > badness) { /* 取分值高的sk */
 			result = sk;
 			badness = score;
 		}
@@ -663,6 +664,9 @@ int udp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		if (dport == 0)
 			return -EINVAL;
 	} else {
+		/* 如果没有指定对端地址, 并且状态为TCP_ESTABLISHED(说明之前调用connect绑定对端地址)
+		 * 那么目标地址即为inet->daddr和inet->dport
+		 */
 		if (sk->sk_state != TCP_ESTABLISHED)
 			return -EDESTADDRREQ;
 		daddr = inet->daddr;

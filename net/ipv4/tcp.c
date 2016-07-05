@@ -1901,14 +1901,15 @@ void tcp_close(struct sock *sk, long timeout)
 	 *  descriptor close, not protocol-sourced closes, because the
 	 *  reader process may not have drained the data yet!
 	 */
+	/* 释放接收队列上的skb */
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
 		u32 len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
 			  tcp_hdr(skb)->fin;
-		data_was_unread += len;
-		__kfree_skb(skb);
+		data_was_unread += len; /* 统计未被应用层接收的数据长度 */
+		__kfree_skb(skb); /* 释放skb */
 	}
 
-	sk_mem_reclaim(sk);
+	sk_mem_reclaim(sk); /* 释放预分配内存 */
 
 	/* As outlined in RFC 2525, section 2.17, we send a RST here because
 	 * data was lost. To witness the awful effects of the old behavior of
@@ -1920,9 +1921,12 @@ void tcp_close(struct sock *sk, long timeout)
 	if (data_was_unread) {
 		/* Unread data was tossed, zap the connection. */
 		NET_INC_STATS_USER(sock_net(sk), LINUX_MIB_TCPABORTONCLOSE);
-		tcp_set_state(sk, TCP_CLOSE);
-		tcp_send_active_reset(sk, sk->sk_allocation);
+		tcp_set_state(sk, TCP_CLOSE); /* 设置为CLOSE状态 */
+		tcp_send_active_reset(sk, sk->sk_allocation); /* 发送RESET */
 	} else if (sock_flag(sk, SOCK_LINGER) && !sk->sk_lingertime) {
+		/* 如果设置了SO_LINGER并且timeout设置为0,
+		 * 那么直接tcp_disconnect()清理各种队列
+		 */
 		/* Check zero linger _after_ checking for unread data. */
 		sk->sk_prot->disconnect(sk, 0);
 		NET_INC_STATS_USER(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
@@ -1955,6 +1959,7 @@ void tcp_close(struct sock *sk, long timeout)
 		tcp_send_fin(sk);
 	}
 
+	/* 设置SO_LINGER后等待timeout */
 	sk_stream_wait_close(sk, timeout);
 
 adjudge_to_death:
@@ -2064,18 +2069,22 @@ int tcp_disconnect(struct sock *sk, int flags)
 	} else if (tcp_need_reset(old_state) ||
 		   (tp->snd_nxt != tp->write_seq &&
 		    (1 << old_state) & (TCPF_CLOSING | TCPF_LAST_ACK))) {
+		/* 以下两种情况需要发送reset:
+		 * 1. 处于ESTABLISTED/CLOSE_WAIT/FIN_WAIT1/FIN_WAIT2/SYN_RECV
+		 * 2. CLOSING/LAST_ACK状态下还有没发送完的数据 
+		 */
 		/* The last check adjusts for discrepancy of Linux wrt. RFC
 		 * states
 		 */
-		tcp_send_active_reset(sk, gfp_any());
+		tcp_send_active_reset(sk, gfp_any()); /* 发送reset */
 		sk->sk_err = ECONNRESET;
 	} else if (old_state == TCP_SYN_SENT)
 		sk->sk_err = ECONNRESET;
 
-	tcp_clear_xmit_timers(sk);
-	__skb_queue_purge(&sk->sk_receive_queue);
-	tcp_write_queue_purge(sk);
-	__skb_queue_purge(&tp->out_of_order_queue);
+	tcp_clear_xmit_timers(sk); /*清除各种定时器 */
+	__skb_queue_purge(&sk->sk_receive_queue); /* 清理接收队列 */
+	tcp_write_queue_purge(sk); /* 清理发送队列 */
+	__skb_queue_purge(&tp->out_of_order_queue); /* 清理乱序队列 */
 #ifdef CONFIG_NET_DMA
 	__skb_queue_purge(&sk->sk_async_wait_queue);
 #endif

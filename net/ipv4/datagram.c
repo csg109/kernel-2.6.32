@@ -64,6 +64,11 @@ int ip4_datagram_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		inet->saddr = rt->rt_src;	/* Update source address */
 	if (!inet->rcv_saddr)
 		inet->rcv_saddr = rt->rt_src;
+
+	/* connect会绑定对端的IP地址和端口, 并把状态设置为TCP_ESTABLISHED, 
+	 * 在udp_sendmsg()时如果没指定对端地址且为TCP_ESTABLISHED状态，
+	 * 则取inet->daddr和inet->dport作为对端地址
+	 */
 	inet->daddr = rt->rt_dst;
 	inet->dport = usin->sin_port;
 	sk->sk_state = TCP_ESTABLISHED;

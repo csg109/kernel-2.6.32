@@ -436,7 +436,7 @@ int inet_release(struct socket *sock)
 		    !(current->flags & PF_EXITING))
 			timeout = sk->sk_lingertime;
 		sock->sk = NULL;
-		sk->sk_prot->close(sk, timeout);
+		sk->sk_prot->close(sk, timeout); /* 调用tcp_close() */
 	}
 	return 0;
 }
@@ -506,7 +506,9 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		inet->saddr = 0;  /* Use device */
 
 	/* Make sure we are allowed to bind here. */
-	if (sk->sk_prot->get_port(sk, snum)) { /* TCP调用inet_csk_get_port() */
+	if (sk->sk_prot->get_port(sk, snum)) { /* TCP调用inet_csk_get_port()
+						* UDP调用udp_v4_get_port()
+						*/
 		inet->saddr = inet->rcv_saddr = 0;
 		err = -EADDRINUSE;
 		goto out_release_sock;
