@@ -666,7 +666,7 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
  * You should not add any new code to this function.  Add it to
  * __copy_skb_header above instead.
  */
-/* 复制skb结构, 数据区共用 */
+/* 复制skb结构, 数据区共用(线性区和非线性区都共用) */
 static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 {
 #define C(x) n->x = skb->x
@@ -805,6 +805,7 @@ struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 }
 EXPORT_SYMBOL(skb_clone);
 
+/* 拷贝skb结构本身 */
 static void copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 {
 #ifndef NET_SKBUFF_DATA_USES_OFFSET
@@ -844,7 +845,7 @@ static void copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
  *	function is not recommended for use in circumstances when only
  *	header is going to be modified. Use pskb_copy() instead.
  */
-/* 拷贝skb, 包括skb结构和所有数据
+/* 拷贝skb, 包括skb结构和所有数据(线性+非线性)
  * 注意：拷贝后的skb是线性化的 
  */
 struct sk_buff *skb_copy(const struct sk_buff *skb, gfp_t gfp_mask)
@@ -1102,6 +1103,9 @@ EXPORT_SYMBOL(skb_realloc_headroom);
  *	You must pass %GFP_ATOMIC as the allocation priority if this function
  *	is called from an interrupt.
  */
+/* 拷贝skb, 包括skb结构和所有数据(线性+非线性)
+ * 与skb_copy()的区别是可以在头部和尾部增加空间
+ */
 struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 				int newheadroom, int newtailroom,
 				gfp_t gfp_mask)
@@ -1109,6 +1113,7 @@ struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 	/*
 	 *	Allocate the copy buffer
 	 */
+	/* 分配整个skb数据大小加上新的头尾长度，这个分配是线性的 */
 	struct sk_buff *n = alloc_skb(newheadroom + skb->len + newtailroom,
 				      gfp_mask);
 	int oldheadroom = skb_headroom(skb);
@@ -1118,11 +1123,14 @@ struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 	if (!n)
 		return NULL;
 
-	skb_reserve(n, newheadroom);
+	skb_reserve(n, newheadroom); /* 预留头部 */
 
 	/* Set the tail pointer and length */
-	skb_put(n, skb->len);
+	skb_put(n, skb->len); /* 先设置skb数据长度，后面再拷贝数据 */
 
+	/* 由于拷贝是从skb->head开始而不只是skb->data,
+	 * 所以需要计算偏移
+	 */
 	head_copy_len = oldheadroom;
 	head_copy_off = 0;
 	if (newheadroom <= head_copy_len)
@@ -1131,12 +1139,14 @@ struct sk_buff *skb_copy_expand(const struct sk_buff *skb,
 		head_copy_off = newheadroom - head_copy_len;
 
 	/* Copy the linear header and data. */
+	/* 这里拷贝数据，拷贝是从原skb的head开始的(并不止是data之后的数据) */
 	if (skb_copy_bits(skb, -head_copy_len, n->head + head_copy_off,
 			  skb->len + head_copy_len))
 		BUG();
 
-	copy_skb_header(n, skb);
+	copy_skb_header(n, skb); /* 拷贝skb结构本身 */
 
+	/* 因为newheadroom的影响，以下校正下头部偏移量 */
 	off                  = newheadroom - oldheadroom;
 	n->csum_start       += off;
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
