@@ -495,7 +495,7 @@ struct tcp_timewait_sock {
 	u32			  tw_snd_nxt;
 	u32			  tw_rcv_wnd;
 	u32			  tw_ts_recent;
-	long			  tw_ts_recent_stamp;
+	long			  tw_ts_recent_stamp; /* 保存上次收到对方时间戳的时间 */
 #ifdef CONFIG_TCP_MD5SIG
 	u16			  tw_md5_keylen;
 	u8			  tw_md5_key[TCP_MD5SIG_MAXKEYLEN];

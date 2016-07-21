@@ -279,6 +279,7 @@ void inet_twsk_deschedule(struct inet_timewait_sock *tw,
 
 EXPORT_SYMBOL(inet_twsk_deschedule);
 
+/* 重新调度该tw, 即设置超时时间并加入twdr对应slot然后触发定时器 */
 void inet_twsk_schedule(struct inet_timewait_sock *tw,
 		       struct inet_timewait_death_row *twdr,
 		       const int timeo, const int timewait_len)
@@ -329,9 +330,9 @@ void inet_twsk_schedule(struct inet_timewait_sock *tw,
 			if (slot >= INET_TWDR_TWKILL_SLOTS)
 				slot = INET_TWDR_TWKILL_SLOTS - 1;
 		}
-		tw->tw_ttd = jiffies + timeo;
-		slot = (twdr->slot + slot) & (INET_TWDR_TWKILL_SLOTS - 1);
-		list = &twdr->cells[slot];
+		tw->tw_ttd = jiffies + timeo; /* 设置超时时间 */
+		slot = (twdr->slot + slot) & (INET_TWDR_TWKILL_SLOTS - 1); /* 选择对应slot */
+		list = &twdr->cells[slot]; /* 根据slot找到对应要加入的list */
 	} else {
 		tw->tw_ttd = jiffies + (slot << INET_TWDR_RECYCLE_TICK);
 

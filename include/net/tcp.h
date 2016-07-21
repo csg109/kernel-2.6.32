@@ -1090,19 +1090,31 @@ static inline int tcp_fin_time(const struct sock *sk)
 static inline int tcp_paws_check(const struct tcp_options_received *rx_opt,
 				 int paws_win)
 {
+	/* 上一次收到的时间戳 减去 这次收到的时间戳 小于等于paws_win(为0)
+	 * 说明收到的时间戳是递增的, 可以通过
+	 */
 	if ((s32)(rx_opt->ts_recent - rx_opt->rcv_tsval) <= paws_win)
 		return 1;
+
+	/* 当前时间 大于 上一次收到对方时间戳的时间加上24天,
+	 * 说明时间很长了,可以通过
+	 */
 	if (unlikely(get_seconds() >= rx_opt->ts_recent_stamp + TCP_PAWS_24DAYS))
 		return 1;
 
-	return 0;
+	return 0; /* 无法通过 */
 }
 
+/* 检测PAWS, 
+ * 返回1表示数据包是之前的, 不通过; 
+ * 返回0表示时间戳递增的数据包,可以通过 
+ */
 static inline int tcp_paws_reject(const struct tcp_options_received *rx_opt,
 				  int rst)
 {
+	/* 判断收到数据包的时间戳是否是递增的, 递增的话则为正常 */
 	if (tcp_paws_check(rx_opt, 0))
-		return 0;
+		return 0; /* 可以通过 */
 
 	/* RST segments are not recommended to carry timestamp,
 	   and, if they do, it is recommended to ignore PAWS because
@@ -1116,9 +1128,10 @@ static inline int tcp_paws_reject(const struct tcp_options_received *rx_opt,
 
 	   However, we can relax time bounds for RST segments to MSL.
 	 */
+	/* 如果这个RST距离上次收到对方时间戳的时间大于60秒, 那么可以通过 */
 	if (rst && get_seconds() >= rx_opt->ts_recent_stamp + TCP_PAWS_MSL)
 		return 0;
-	return 1;
+	return 1; /* 无法通过 */
 }
 
 #define TCP_CHECK_TIMER(sk) do { } while (0)

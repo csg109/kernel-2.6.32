@@ -52,7 +52,7 @@ struct inet_hashinfo;
 #elif HZ <= 512
 # define INET_TWDR_RECYCLE_TICK (9 + 2 - INET_TWDR_RECYCLE_SLOTS_LOG)
 #elif HZ <= 1024
-# define INET_TWDR_RECYCLE_TICK (10 + 2 - INET_TWDR_RECYCLE_SLOTS_LOG)
+# define INET_TWDR_RECYCLE_TICK (10 + 2 - INET_TWDR_RECYCLE_SLOTS_LOG) /* HZ==1000时为7 */
 #elif HZ <= 2048
 # define INET_TWDR_RECYCLE_TICK (11 + 2 - INET_TWDR_RECYCLE_SLOTS_LOG)
 #else
@@ -118,7 +118,7 @@ struct inet_timewait_sock {
 #define tw_prot			__tw_common.skc_prot
 #define tw_net			__tw_common.skc_net
 	int			tw_timeout;
-	volatile unsigned char	tw_substate;
+	volatile unsigned char	tw_substate;	/* 保存之前sk的状态，可能为TCP_TIME_WAIT或TCP_FIN_WAIT2 */
 	/* 3 bits hole, try to pack */
 	unsigned char		tw_rcv_wscale;
 	/* Socket demultiplex comparisons on incoming packets. */
@@ -135,7 +135,7 @@ struct inet_timewait_sock {
 				tw_pad		: 14,	/* 14 bits hole */
 				tw_ipv6_offset  : 16;
 	kmemcheck_bitfield_end(flags);
-	unsigned long		tw_ttd;
+	unsigned long		tw_ttd;		/* 超时的jiffies */
 	struct inet_bind_bucket	*tw_tb;
 	struct hlist_node	tw_death_node;
 };

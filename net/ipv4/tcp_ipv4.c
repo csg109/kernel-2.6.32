@@ -1233,6 +1233,11 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	struct request_sock *req;
 	__be32 saddr = ip_hdr(skb)->saddr;
 	__be32 daddr = ip_hdr(skb)->daddr;
+
+	/* 如果是在TIME_WAIT收到SYN包,那么初始序列号
+	 * 由函数tcp_timewait_state_process()保存在when成员中,
+	 * 否则when为0下面由函数tcp_v4_init_sequence()计算
+	 */
 	__u32 isn = TCP_SKB_CB(skb)->when;
 	struct dst_entry *dst = NULL;
 #ifdef CONFIG_SYN_COOKIES
@@ -1741,8 +1746,13 @@ do_time_wait:
 		inet_twsk_put(inet_twsk(sk));
 		goto discard_it;
 	}
+	/* 这里处理TIME_WAIT状态收到各类数据包的情况 */
 	switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
 	case TCP_TW_SYN: {
+		/* 正常的SYN, 查找listening的sk
+		 * 如果找到了sk则删除旧的TIME_WAIT然后处理握手过程
+		 * 否则回复ACK
+		 */
 		struct sock *sk2 = inet_lookup_listener(dev_net(skb->dev),
 							&tcp_hashinfo,
 							iph->daddr, th->dest,
@@ -1756,11 +1766,11 @@ do_time_wait:
 		/* Fall through to ACK */
 	}
 	case TCP_TW_ACK:
-		tcp_v4_timewait_ack(sk, skb);
+		tcp_v4_timewait_ack(sk, skb); /* 回复ACK */
 		break;
 	case TCP_TW_RST:
-		goto no_tcp_socket;
-	case TCP_TW_SUCCESS:;
+		goto no_tcp_socket; /* 回复RST */
+	case TCP_TW_SUCCESS:; /* 直接丢弃数据包 */
 	}
 	goto discard_it;
 }

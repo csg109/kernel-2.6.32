@@ -98,36 +98,58 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 {
 	struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
 	struct tcp_options_received tmp_opt;
-	int paws_reject = 0;
+	int paws_reject = 0; /* 如果为1表示PAWS拒绝该数据包 */
 
 	tmp_opt.saw_tstamp = 0;
-	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
-		tcp_parse_options(skb, &tmp_opt, 0);
 
-		if (tmp_opt.saw_tstamp) {
-			tmp_opt.ts_recent	= tcptw->tw_ts_recent;
-			tmp_opt.ts_recent_stamp	= tcptw->tw_ts_recent_stamp;
+	/* 如果该数据包有TCP选项并且上个连接有时间戳，
+	 * 那么PAWS需要检查下这个数据包的时间戳来判断给数据包的合法性
+	 */
+	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
+		tcp_parse_options(skb, &tmp_opt, 0); /* 解析TCP选项 */
+
+		if (tmp_opt.saw_tstamp) { /* 本地有时间戳,需要检测PAWS */
+			tmp_opt.ts_recent	= tcptw->tw_ts_recent; /* 上次的时间戳 */
+			tmp_opt.ts_recent_stamp	= tcptw->tw_ts_recent_stamp; /* 上次时间戳的时间 */
+			/* 如果时间戳的递增的则返回0,表示正常;否则判断为之前的数据包 */
 			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
 		}
 	}
 
+	/* 两种状态下会调用tcp_time_wait()切换为TIME_WAIT状态, 
+	 * 通过在tw->tw_substate保存原状态来区分:
+	 *  1.正常切换到TIME_WAIT状态, 这时tw->tw_substate = TCP_TIME_WAIT
+	 *  2.应用层使用了TCP_LINGER2, 在FIN_WAIT1或FIN_WAIT2状态关闭了socket然后等到超时,
+	 *    这时tw->tw_substate = TCP_FIN_WAIT2
+	 *    这种情况还需要等待对方的FIN过来才会跟情况1一样
+	 */
+
+	/* 
+	 * 这里先处理原sk是TCP_FIN_WAIT2状态 
+	 */
 	if (tw->tw_substate == TCP_FIN_WAIT2) {
 		/* Just repeat all the checks of tcp_rcv_state_process() */
 
 		/* Out of window, send ACK */
+		/* PAWS检测不通过并且序号号在接收窗口之外时回复ACK然后丢弃数据包 */
 		if (paws_reject ||
 		    !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq,
 				   tcptw->tw_rcv_nxt,
 				   tcptw->tw_rcv_nxt + tcptw->tw_rcv_wnd))
-			return TCP_TW_ACK;
+			return TCP_TW_ACK; /* 回复ACK然后丢弃数据包 */
 
+		/* 如果是RST数据包则删除TIME_WAIT连接 */
 		if (th->rst)
 			goto kill;
 
+		/* 如果是SYN包并且序列号在上个连接之后则删除TIME_WAIT然后回复RST
+		 * 因为对端还未发送FIN来结束原连接
+		 */
 		if (th->syn && !before(TCP_SKB_CB(skb)->seq, tcptw->tw_rcv_nxt))
 			goto kill_with_rst;
 
 		/* Dup ACK? */
+		/* 旧的SYN包/旧的重复数据/ACK 则直接无视 */
 		if (!th->ack ||
 		    !after(TCP_SKB_CB(skb)->end_seq, tcptw->tw_rcv_nxt) ||
 		    TCP_SKB_CB(skb)->end_seq == TCP_SKB_CB(skb)->seq) {
@@ -138,15 +160,19 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 		/* New data or FIN. If new data arrive after half-duplex close,
 		 * reset.
 		 */
+		/* 到这里如果不是FIN包 或者 收到新数据(因为应用层已经不接收数据了所以回复RST),
+		 * 则关闭TIME_WAIT回复RST
+		 */
 		if (!th->fin ||
 		    TCP_SKB_CB(skb)->end_seq != tcptw->tw_rcv_nxt + 1) {
 kill_with_rst:
-			inet_twsk_deschedule(tw, &tcp_death_row);
+			inet_twsk_deschedule(tw, &tcp_death_row); /* 删除TIME_WAIT */
 			inet_twsk_put(tw);
-			return TCP_TW_RST;
+			return TCP_TW_RST; /* 回复RST */
 		}
 
 		/* FIN arrived, enter true time-wait state. */
+		/* 这里就是FIN包来了, 更新下状态, 下次收到数据包就走正常的TIME_WAIT流程了 */
 		tw->tw_substate	  = TCP_TIME_WAIT;
 		tcptw->tw_rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 		if (tmp_opt.saw_tstamp) {
@@ -167,7 +193,7 @@ kill_with_rst:
 		else
 			inet_twsk_schedule(tw, &tcp_death_row, TCP_TIMEWAIT_LEN,
 					   TCP_TIMEWAIT_LEN);
-		return TCP_TW_ACK;
+		return TCP_TW_ACK; /* 针对收到的FIN回复ACK */
 	}
 
 	/*
@@ -187,11 +213,26 @@ kill_with_rst:
 	 *	to be an old duplicate".
 	 */
 
+	/* 
+	 * 到这里说明原sk是TCP_TIME_WAIT状态 
+	 */
+
+	/* 如果满足以下3个条件:
+	 * 1.PAWS验证通过
+	 * 2.序列号不是旧的
+	 * 3.没有携带数据(比如ACK)或者RST 
+	 * 那么，TIME_WAIT超时重新调度60秒(rfc1337关闭时在TIME_WAIT收到RST时可以直接关闭)
+	 */
 	if (!paws_reject &&
 	    (TCP_SKB_CB(skb)->seq == tcptw->tw_rcv_nxt &&
 	     (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq || th->rst))) {
 		/* In window segment, it may be only reset or bare ack. */
 
+		/* 如果是RST包, 
+		 * sysctl_tcp_rfc1337参数为0的情况下直接删除TIME_WAIT状态并丢弃本数据包
+		 * 收到RST说明不需要保留TIME_WAIT了.
+		 * (但是rfc1337有说明此时还需要保留TIME_WIAT的几种情况)
+		 */
 		if (th->rst) {
 			/* This is TIME_WAIT assassination, in two flavors.
 			 * Oh well... nobody has a sufficient solution to this
@@ -201,19 +242,22 @@ kill_with_rst:
 kill:
 				inet_twsk_deschedule(tw, &tcp_death_row);
 				inet_twsk_put(tw);
-				return TCP_TW_SUCCESS;
+				return TCP_TW_SUCCESS;  /* 返回后直接丢弃数据包 */
 			}
 		}
+
+		/* 重新设置TIME_WAIT超时时间为60秒 */
 		inet_twsk_schedule(tw, &tcp_death_row, TCP_TIMEWAIT_LEN,
 				   TCP_TIMEWAIT_LEN);
 
+		/* 如果有时间戳选项，则更新最近收到的时间戳 */
 		if (tmp_opt.saw_tstamp) {
 			tcptw->tw_ts_recent	  = tmp_opt.rcv_tsval;
 			tcptw->tw_ts_recent_stamp = get_seconds();
 		}
 
 		inet_twsk_put(tw);
-		return TCP_TW_SUCCESS;
+		return TCP_TW_SUCCESS; /* 返回后直接丢弃数据包 */
 	}
 
 	/* Out of window segment.
@@ -233,17 +277,27 @@ kill:
 	   but not fatal yet.
 	 */
 
+	/*
+	 * 这里处理SYN包, 如果SYN包满足:
+	 * 1.PAWS检测通过
+	 * 2.序列号大于上个连接 
+	 *   或者
+	 *   有时间戳并且时间戳在上个连接之后
+	 * 那么就为合法的SYN包,可以建立连接
+	 */
 	if (th->syn && !th->rst && !th->ack && !paws_reject &&
 	    (after(TCP_SKB_CB(skb)->seq, tcptw->tw_rcv_nxt) ||
 	     (tmp_opt.saw_tstamp &&
 	      (s32)(tcptw->tw_ts_recent - tmp_opt.rcv_tsval) < 0))) {
-		u32 isn = tcptw->tw_snd_nxt + 65535 + 2;
+		u32 isn = tcptw->tw_snd_nxt + 65535 + 2; /* 初始序列号 */
 		if (isn == 0)
 			isn++;
+		/* 初始序列号先保存在when中,tcp_v4_conn_request()再取出 */
 		TCP_SKB_CB(skb)->when = isn;
-		return TCP_TW_SYN;
+		return TCP_TW_SYN; /* 返回后删除TIME_WAIT并开始握手过程处理 */
 	}
 
+	/* PAWS检测不通过统计 */
 	if (paws_reject)
 		NET_INC_STATS_BH(twsk_net(tw), LINUX_MIB_PAWSESTABREJECTED);
 
@@ -254,6 +308,9 @@ kill:
 		 * and new good SYN with random sequence number <rcv_nxt.
 		 * Do not reschedule in the last case.
 		 */
+		/* 到这里如果非SYN包和RST包 或者 PAWS检测不通过
+		 * 重新设置TIME_WAIT超时时间为60秒 
+		 */
 		if (paws_reject || th->ack)
 			inet_twsk_schedule(tw, &tcp_death_row, TCP_TIMEWAIT_LEN,
 					   TCP_TIMEWAIT_LEN);
@@ -261,14 +318,19 @@ kill:
 		/* Send ACK. Note, we do not put the bucket,
 		 * it will be released by caller.
 		 */
-		return TCP_TW_ACK;
+		return TCP_TW_ACK; /* 回复ACK然后丢弃数据包 */
 	}
 	inet_twsk_put(tw);
-	return TCP_TW_SUCCESS;
+	return TCP_TW_SUCCESS; /* 返回后直接丢弃数据包 */
 }
 
 /*
  * Move a socket to time-wait or dead fin-wait-2 state.
+ */
+/* 两种状态下会调用tcp_time_wait切换为TIME_WAIT状态:
+ * 1.正常切换到TIME_WAIT状态, 这时tw->tw_substate = TCP_TIME_WAIT
+ * 2.应用层使用了TCP_LINGER2, 在FIN_WAIT1或FIN_WAIT2状态关闭了socket然后等到超时
+ *   这时tw->tw_substate = TCP_FIN_WAIT2
  */
 void tcp_time_wait(struct sock *sk, int state, int timeo)
 {
