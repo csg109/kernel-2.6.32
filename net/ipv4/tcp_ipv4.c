@@ -125,12 +125,16 @@ int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
 	   If TW bucket has been already destroyed we fall back to VJ's scheme
 	   and use initial timestamp retrieved from peer table.
 	 */
+	/* 如果同时启用了tcp_timestamps和tcp_tw_reuse，
+	 * 那么只要在上个连接最后数据包的1秒之后就可以复用TIME_WAIT的端口
+	 */
 	if (tcptw->tw_ts_recent_stamp &&
 	    (twp == NULL || (sysctl_tcp_tw_reuse &&
 			     get_seconds() - tcptw->tw_ts_recent_stamp > 1))) {
-		tp->write_seq = tcptw->tw_snd_nxt + 65535 + 2;
+		tp->write_seq = tcptw->tw_snd_nxt + 65535 + 2; /* 初始序列号 */
 		if (tp->write_seq == 0)
 			tp->write_seq = 1;
+		/* 从上个连接的TIME_WAIT获取最后收到的时间戳 */
 		tp->rx_opt.ts_recent	   = tcptw->tw_ts_recent;
 		tp->rx_opt.ts_recent_stamp = tcptw->tw_ts_recent_stamp;
 		sock_hold(sktw);
@@ -197,6 +201,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		tp->write_seq		   = 0;
 	}
 
+	/* 如果使用tcp_tw_recyle, 则从peer更新时间戳 */
 	if (tcp_death_row.sysctl_tw_recycle &&
 	    !tp->rx_opt.ts_recent_stamp && rt->rt_dst == daddr) {
 		struct inet_peer *peer = rt_get_peer(rt);
@@ -1285,7 +1290,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	tmp_opt.mss_clamp = 536;
 	tmp_opt.user_mss  = tcp_sk(sk)->rx_opt.user_mss;
 
-	tcp_parse_options(skb, &tmp_opt, 0);
+	tcp_parse_options(skb, &tmp_opt, 0); /* 解析TCP OPTIONS */
 
 	if (want_cookie && !tmp_opt.saw_tstamp)
 		tcp_clear_options(&tmp_opt);
@@ -1312,7 +1317,9 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		req->cookie_ts = tmp_opt.tstamp_ok;
 #endif
 		isn = cookie_v4_init_sequence(sk, skb, &req->mss); /* 计算cookie */
-	} else if (!isn) {
+	} else if (!isn) { /* 如果isn非零，说明在TIME_WAIT状态收到SYN包，
+			    * 这种情况已经在函数tcp_timewait_state_process()检查过并计算初始序列号了
+			    */
 		struct inet_peer *peer = NULL;
 
 		/* VJ's idea. We save last timestamp seen
@@ -1324,18 +1331,19 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		 * timewait bucket, so that all the necessary checks
 		 * are made in the function processing timewait state.
 		 */
-		/* 当tcp_timestamp和tw_recycle同时打开的情况下
+
+		/* 如果SYN包带有时间戳并且开启了tcp_tw_recycle, 
+		 * 需要检查SYN包的时间戳是不是在上个连接之后(为了防止上个连接重传的SYN包建立连接)
 		 */
-		if (tmp_opt.saw_tstamp &&
-		    tcp_death_row.sysctl_tw_recycle &&
-		    (dst = inet_csk_route_req(sk, req)) != NULL &&
-		    (peer = rt_get_peer((struct rtable *)dst)) != NULL &&
-		    peer->v4daddr == saddr) { /* IP地址一致 */
+		if (tmp_opt.saw_tstamp && /* SYN携带了时间戳 */
+		    tcp_death_row.sysctl_tw_recycle && /* 启用了tcp_tw_recycle */
+		    (dst = inet_csk_route_req(sk, req)) != NULL && /* 查找dst */
+		    (peer = rt_get_peer((struct rtable *)dst)) != NULL && /* 通过dst找到peer */
+		    peer->v4daddr == saddr) { /* peer的IP地址与syn包的源地址一致 */
 			if (get_seconds() < peer->tcp_ts_stamp + TCP_PAWS_MSL && /* 距上个连接60秒以内, 注意这个单位为秒 */
 			    (s32)(peer->tcp_ts - req->ts_recent) >
-							TCP_PAWS_WINDOW) { /* 本次的时间戳比上个连接还早，说明SYN包是之前重传的 */
-				/* 针对距离上个连接60秒内，并且时间戳早于上个连接的SYN包丢弃掉
-				 */
+							TCP_PAWS_WINDOW) { /* SYN包的时间戳比上个连接还早，说明SYN包是之前重传的 */
+				/* 针对距离上个连接60秒内，并且时间戳早于上个连接的SYN包丢弃掉 */
 				NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PAWSPASSIVEREJECTED);
 				goto drop_and_release;
 			}
@@ -1789,6 +1797,7 @@ int tcp_v4_remember_stamp(struct sock *sk)
 	struct inet_peer *peer = NULL;
 	int release_it = 0;
 
+	/* 这里获取peer */
 	if (!rt || rt->rt_dst != inet->daddr) {
 		peer = inet_getpeer(inet->daddr, 1);
 		release_it = 1;
@@ -1799,6 +1808,7 @@ int tcp_v4_remember_stamp(struct sock *sk)
 	}
 
 	if (peer) {
+		/* 更新peer中保存的对端时间戳 */
 		if ((s32)(peer->tcp_ts - tp->rx_opt.ts_recent) <= 0 ||
 		    (peer->tcp_ts_stamp + TCP_PAWS_MSL < get_seconds() &&
 		     peer->tcp_ts_stamp <= tp->rx_opt.ts_recent_stamp)) {
@@ -1807,10 +1817,10 @@ int tcp_v4_remember_stamp(struct sock *sk)
 		}
 		if (release_it)
 			inet_putpeer(peer);
-		return 1;
+		return 1; /* peer存在则使用recycle */
 	}
 
-	return 0;
+	return 0; /* peer不存在则关闭recycle */
 }
 
 int tcp_v4_tw_remember_stamp(struct inet_timewait_sock *tw)

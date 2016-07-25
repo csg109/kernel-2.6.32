@@ -79,13 +79,14 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 {
 	const struct inet_sock *inet = inet_sk(sk);
 	const struct inet_connection_sock *icsk = inet_csk(sk);
-	struct inet_ehash_bucket *ehead = inet_ehash_bucket(hashinfo, sk->sk_hash);
-	spinlock_t *lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
+	struct inet_ehash_bucket *ehead = inet_ehash_bucket(hashinfo, sk->sk_hash); /* 根据哈希值找到桶 */
+	spinlock_t *lock = inet_ehash_lockp(hashinfo, sk->sk_hash); /* 根据哈希值找到桶的锁 */
 	struct inet_bind_hashbucket *bhead;
 	/* Step 1: Put TW into bind hash. Original socket stays there too.
 	   Note, that any socket with inet->num != 0 MUST be bound in
 	   binding cache, even if it is closed.
 	 */
+	/* 第一步，将tw链接到端口的hash表中(原sock暂时先留着) */
 	bhead = &hashinfo->bhash[inet_bhashfn(twsk_net(tw), inet->num,
 			hashinfo->bhash_size)];
 	spin_lock(&bhead->lock);
@@ -101,9 +102,11 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 	 * Should be done before removing sk from established chain
 	 * because readers are lockless and search established first.
 	 */
+	/* 第二步，将tw加入哈希表 */
 	atomic_inc(&tw->tw_refcnt);
 	inet_twsk_add_node_rcu(tw, &ehead->twchain);
 
+	/* 第三步，将原sock从哈希表删除 */
 	/* Step 3: Remove SK from established hash. */
 	if (__sk_nulls_del_node_init_rcu(sk))
 		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);

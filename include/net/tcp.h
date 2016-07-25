@@ -1076,11 +1076,13 @@ static inline u32 keepalive_time_elapsed(const struct tcp_sock *tp)
 			  tcp_time_stamp - tp->rcv_tstamp);
 }
 
+/* 返回FIN_WAIT2的超时时间 */
 static inline int tcp_fin_time(const struct sock *sk)
 {
 	int fin_timeout = tcp_sk(sk)->linger2 ? : sysctl_tcp_fin_timeout;
 	const int rto = inet_csk(sk)->icsk_rto;
 
+	/* 最小为3.5倍RTO */
 	if (fin_timeout < (rto << 2) - (rto >> 1))
 		fin_timeout = (rto << 2) - (rto >> 1);
 

@@ -209,7 +209,7 @@ struct tcp_sack_block { /* 表示一个SACK块 */
 struct tcp_options_received {
 /*	PAWS/RTTM data	*/
 	long	ts_recent_stamp;/* Time we stored ts_recent (for aging) */
-				/* 记录秒时间(get_seconds()的返回值) 
+				/* 记录最后一次收到对端时间戳的秒时间(get_seconds()的返回值) 
 				 * 即ts_recent对应的时间,单位为秒
 				 */
 	u32	ts_recent;	/* Time stamp to echo next		*/
@@ -231,8 +231,9 @@ struct tcp_options_received {
 				/* 开启了SACK */
 				/* 第一位为SACK标志,第二位为FACK标志，第三位为D-SACK标志 */
 		snd_wscale : 4,	/* Window scaling received from sender	*/
-				/* syn包收到的窗口扩大因子，最大为14 */
+				/* 对端的wscale的值, 即syn包收到的窗口扩大因子，最大为14 */
 		rcv_wscale : 4;	/* Window scaling to send to receiver	*/
+				/* 本端的wscale值 */
 /*	SACKs data	*/
 	u8	num_sacks;	/* Number of SACK blocks		*/
 	u16	user_mss;  	/* mss requested by user in ioctl */
@@ -439,7 +440,11 @@ struct tcp_sock {
 	unsigned int		keepalive_intvl;  /* time interval between keep alive probes */
 						  /* 由setsockopt设置的keepalive的探测间隔, 即探测报文之间的时间间隔 */
 
-	int			linger2;
+	int			linger2;	/* 由应用层TCP_LINGER2设置, 表示FIN_WAIT2状态的超时时间
+						 *  负数表示FIN_WAIT2直接关闭连接并发送RST
+						 *  0表示不设置或者设置值超过sysctl_tcp_fin_timeout(默认60秒),这时按照sysctl_tcp_fin_timeout处理
+						 *  正数表示不超过sysctl_tcp_fin_timeout的超时时间值
+						 */
 
 /* Receiver side RTT estimation */
 	struct {
@@ -494,8 +499,8 @@ struct tcp_timewait_sock {
 	u32			  tw_rcv_nxt;
 	u32			  tw_snd_nxt;
 	u32			  tw_rcv_wnd;
-	u32			  tw_ts_recent;
-	long			  tw_ts_recent_stamp; /* 保存上次收到对方时间戳的时间 */
+	u32			  tw_ts_recent;	      /* 保存上次收到对端的时间戳 */
+	long			  tw_ts_recent_stamp; /* 保存上次收到对端时间戳的时间 */
 #ifdef CONFIG_TCP_MD5SIG
 	u16			  tw_md5_keylen;
 	u8			  tw_md5_key[TCP_MD5SIG_MAXKEYLEN];

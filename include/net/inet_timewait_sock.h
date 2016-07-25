@@ -72,7 +72,7 @@ struct inet_timewait_death_row {
 	struct hlist_head	twcal_row[INET_TWDR_RECYCLE_SLOTS];
 
 	spinlock_t		death_lock;
-	int			tw_count;
+	int			tw_count; /* 当前TIME_WAIT的数量 */
 	int			period;
 	u32			thread_slots;
 	struct work_struct	twkill_work;
@@ -80,8 +80,10 @@ struct inet_timewait_death_row {
 	int			slot;
 	struct hlist_head	cells[INET_TWDR_TWKILL_SLOTS];
 	struct inet_hashinfo 	*hashinfo;
-	int			sysctl_tw_recycle;
-	int			sysctl_max_tw_buckets;
+	int			sysctl_tw_recycle; /* TIME_WAIT快速回收开关, 即tcp_tw_recycle, 
+						    * 开启后TIME_WAIT时间为3.5倍RTT, 需要tcp_timestamps同时开启才有用
+						    */
+	int			sysctl_max_tw_buckets; /* 允许最大TIME_WAIT的数量, 即tcp_max_tw_buckets */
 };
 
 extern void inet_twdr_hangman(unsigned long data);
@@ -117,10 +119,14 @@ struct inet_timewait_sock {
 #define tw_hash			__tw_common.skc_hash
 #define tw_prot			__tw_common.skc_prot
 #define tw_net			__tw_common.skc_net
-	int			tw_timeout;
-	volatile unsigned char	tw_substate;	/* 保存之前sk的状态，可能为TCP_TIME_WAIT或TCP_FIN_WAIT2 */
+	int			tw_timeout;	/* 表示TIME_WAIT的超时时间 */
+	volatile unsigned char	tw_substate;	/* 保存之前sk的状态，可能为
+						 *    TCP_TIME_WAIT: 真实的TIME_WAIT状态
+						 *    TCP_FIN_WAIT2: 真实为FIN_WAIT2状态,
+						 *    		这种情况tw会代理切换到TIME_WAIT状态的过程
+						 */
 	/* 3 bits hole, try to pack */
-	unsigned char		tw_rcv_wscale;
+	unsigned char		tw_rcv_wscale; /* 保存本端wsacle的值 */
 	/* Socket demultiplex comparisons on incoming packets. */
 	/* these five are in inet_sock */
 	__be16			tw_sport;
@@ -136,7 +142,7 @@ struct inet_timewait_sock {
 				tw_ipv6_offset  : 16;
 	kmemcheck_bitfield_end(flags);
 	unsigned long		tw_ttd;		/* 超时的jiffies */
-	struct inet_bind_bucket	*tw_tb;
+	struct inet_bind_bucket	*tw_tb;		/* 链接到端口的hash表中 */
 	struct hlist_node	tw_death_node;
 };
 

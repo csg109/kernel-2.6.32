@@ -119,7 +119,7 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 	/* 两种状态下会调用tcp_time_wait()切换为TIME_WAIT状态, 
 	 * 通过在tw->tw_substate保存原状态来区分:
 	 *  1.正常切换到TIME_WAIT状态, 这时tw->tw_substate = TCP_TIME_WAIT
-	 *  2.应用层使用了TCP_LINGER2, 在FIN_WAIT1或FIN_WAIT2状态关闭了socket然后等到超时,
+ 	 *  2.应用层close()后FIN_WAIT2状态进入, 等待超时
 	 *    这时tw->tw_substate = TCP_FIN_WAIT2
 	 *    这种情况还需要等待对方的FIN过来才会跟情况1一样
 	 */
@@ -175,6 +175,7 @@ kill_with_rst:
 		/* 这里就是FIN包来了, 更新下状态, 下次收到数据包就走正常的TIME_WAIT流程了 */
 		tw->tw_substate	  = TCP_TIME_WAIT;
 		tcptw->tw_rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+		/* 更新下最后接收的时间戳 */
 		if (tmp_opt.saw_tstamp) {
 			tcptw->tw_ts_recent_stamp = get_seconds();
 			tcptw->tw_ts_recent	  = tmp_opt.rcv_tsval;
@@ -185,6 +186,12 @@ kill_with_rst:
 		 * to generalize to IPv6. Taking into account that IPv6
 		 * do not understand recycling in any case, it not
 		 * a big problem in practice. --ANK */
+
+		/* 这里已经收到了FIN包进入真正的TIME_WAIT状态
+		 * 如果tcp_tw_recycle启用那么TIME_WAIT时间为3.5倍RTO
+		 * 	(tw->tw_timeout在tcp_time_wait()中初始化为3.5倍RTO),
+		 * 否则为正常的60秒TIME_WAIT
+		 */
 		if (tw->tw_family == AF_INET &&
 		    tcp_death_row.sysctl_tw_recycle && tcptw->tw_ts_recent_stamp &&
 		    tcp_v4_tw_remember_stamp(tw))
@@ -329,8 +336,8 @@ kill:
  */
 /* 两种状态下会调用tcp_time_wait切换为TIME_WAIT状态:
  * 1.正常切换到TIME_WAIT状态, 这时tw->tw_substate = TCP_TIME_WAIT
- * 2.应用层使用了TCP_LINGER2, 在FIN_WAIT1或FIN_WAIT2状态关闭了socket然后等到超时
- *   这时tw->tw_substate = TCP_FIN_WAIT2
+ * 2.应用层close()后FIN_WAIT2状态进入, 等待超时
+ *   这时tw->tw_substate = TCP_FIN_WAIT2，并且tw可以处理FIN_WAIT2接收FIN到TIME_WAIT的过程
  */
 void tcp_time_wait(struct sock *sk, int state, int timeo)
 {
@@ -341,7 +348,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 
 	/* 如果没有时间戳选项的话，tcp_tw_recycle参数无效 */
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
-		recycle_ok = icsk->icsk_af_ops->remember_stamp(sk);
+		recycle_ok = icsk->icsk_af_ops->remember_stamp(sk); /* 调用tcp_v4_remember_stamp函数记录时间戳 */
 
 	/* tcp_death_row.tw_count是当前TIME_WAIT状态套接字的数量，
 	 * tcp_death_row.sysctl_max_tw_buckets的值是系统参数tcp_max_tw_buckets的值，
@@ -349,7 +356,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	 * 如果分配内存失败，tw的值也为NULL。 
 	 */
 	if (tcp_death_row.tw_count < tcp_death_row.sysctl_max_tw_buckets)
-		tw = inet_twsk_alloc(sk, state);
+		tw = inet_twsk_alloc(sk, state); /* 分配一个inet_timewait_sock */
 
 	if (tw != NULL) {
 		struct tcp_timewait_sock *tcptw = tcp_twsk((struct sock *)tw);
@@ -398,20 +405,29 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 #endif
 
 		/* Linkage updates. */
+		/* 将tw加入哈希表, 原sk从哈希表删除 */
 		__inet_twsk_hashdance(tw, sk, &tcp_hashinfo);
 
 		/* Get the TIME_WAIT timeout firing. */
+		/* 超时时间不能小于3.5倍RTO */
 		if (timeo < rto)
 			timeo = rto;
 
-		if (recycle_ok) {
+		if (recycle_ok) { 
+			/* 如果tcp_tw_recycle启用,那么TIME_WAIT超时时间和timeo都为3.5倍RTO */
 			tw->tw_timeout = rto;
 		} else {
-			tw->tw_timeout = TCP_TIMEWAIT_LEN; /* 60秒的TIMEWAIT */
+			/* tw_timeout表示真正TIME_WAIT的超时时间，都是60秒
+			 * timeo表示本次的超时时间
+			 * 如果现在是FIN_WAIT2状态,那么timeo为应用层指定的TCP_LINGER2时间(且不小于3.5倍RTO)
+			 * 如果现在是TIME_WAIT状态，那么timo就为60秒
+			 */
+			tw->tw_timeout = TCP_TIMEWAIT_LEN; /* 60秒的TIMEWAIT超时时间 */
 			if (state == TCP_TIME_WAIT)
 				timeo = TCP_TIMEWAIT_LEN;
 		}
-
+		
+		/* 调度tw，超时时间为timeo */
 		inet_twsk_schedule(tw, &tcp_death_row, timeo,
 				   TCP_TIMEWAIT_LEN);
 		inet_twsk_put(tw);
@@ -420,11 +436,12 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 		 * socket up.  We've got bigger problems than
 		 * non-graceful socket closings.
 		 */
+		/* TIME_WAIT数量超过tcp_max_tw_buckets或者内存不足会打印警告信息 */
 		LIMIT_NETDEBUG(KERN_INFO "TCP: time wait bucket table overflow\n");
 	}
 
-	tcp_update_metrics(sk);
-	tcp_done(sk);
+	tcp_update_metrics(sk); /* 更新路由缓存记录的值 */
+	tcp_done(sk); /* 原sock可以关闭了 */
 }
 
 void tcp_twsk_destructor(struct sock *sk)

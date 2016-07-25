@@ -6238,26 +6238,32 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			break;
 
 		case TCP_FIN_WAIT1:
-			if (tp->snd_una == tp->write_seq) {
-				tcp_set_state(sk, TCP_FIN_WAIT2);
+			if (tp->snd_una == tp->write_seq) { /* 针对FIN的ACK */
+				tcp_set_state(sk, TCP_FIN_WAIT2); /* 切换到FIN_WAIT2 */
 				sk->sk_shutdown |= SEND_SHUTDOWN;
 				dst_confirm(sk->sk_dst_cache);
 
 				if (!sock_flag(sk, SOCK_DEAD))
 					/* Wake up lingering close() */
 					sk->sk_state_change(sk);
-				else {
+				else { /* 如果应用层已经关闭了 */
 					int tmo;
 
+					/* 如果
+					 *   应用层设置了TCP_INGER2为负数 
+					 *   或者 
+					 *   收到了新的数据(因为应用层已经关闭)，
+					 * 那么直接关闭sock并回复RST
+					 */
 					if (tp->linger2 < 0 ||
-					    (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq &&
-					     after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt))) {
+					    (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq && /* 有数据 */
+					     after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt))) { /* 并且是新数据 */
 						tcp_done(sk);
 						NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
-						return 1;
+						return 1; /* 回复RST */
 					}
 
-					tmo = tcp_fin_time(sk);
+					tmo = tcp_fin_time(sk); /* FIN_WAIT2状态的超时时间 */
 					if (tmo > TCP_TIMEWAIT_LEN) {
 						inet_csk_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
 					} else if (th->fin || sock_owned_by_user(sk)) {
