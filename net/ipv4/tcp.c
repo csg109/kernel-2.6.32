@@ -1998,20 +1998,30 @@ adjudge_to_death:
 	 *	linger2	option.					--ANK
 	 */
 
+	/* 如果此时为FIN_WAIT2状态，可以直接进入TIME_WAIT(真实状态还是FIN_WAIT2)，后面接收FIN包由TIME_WAIT代理
+	 * 对应先处于FIN_WAIT2状态然后应用层再close()的情况
+	 * 比如：
+	 * 	之前应用层已经SHUTDOWN发送了FIN并且接收ACK进入了FIN_WAIT2状态，
+	 * 	然后现在应用层又close()了
+	 */
 	if (sk->sk_state == TCP_FIN_WAIT2) {
 		struct tcp_sock *tp = tcp_sk(sk);
-		if (tp->linger2 < 0) {
+		if (tp->linger2 < 0) { /* 如果为负数则直接关闭sock并发送RST */
 			tcp_set_state(sk, TCP_CLOSE);
 			tcp_send_active_reset(sk, GFP_ATOMIC);
 			NET_INC_STATS_BH(sock_net(sk),
 					LINUX_MIB_TCPABORTONLINGER);
 		} else {
-			const int tmo = tcp_fin_time(sk);
+			const int tmo = tcp_fin_time(sk); /* 获取FIN_WAIT2的超时时间 */
 
+			/* 如果FIN_WAIT2超时时间大于TIMEWAIT的超时时间，
+			 * 那么先触发差值的keepalive，keepalive后再触发等待差值的FIN_WAIT2,
+			 * 接下来如果进入TIME_WAIT还需要等待TCP_TIMEWAIT_LEN的TIME_WAIT超时时间
+			 */
 			if (tmo > TCP_TIMEWAIT_LEN) {
 				inet_csk_reset_keepalive_timer(sk,
 						tmo - TCP_TIMEWAIT_LEN);
-			} else {
+			} else { /* 否则直接等待tmo的FIN_WAIT2超时 */
 				tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
 				goto out;
 			}
@@ -2261,12 +2271,15 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 			icsk->icsk_syn_retries = val;
 		break;
 
-	case TCP_LINGER2:
-		if (val < 0)
+	case TCP_LINGER2: /* 设置在应用层close()后FIN_WAIT2状态的超时时间 */
+		if (val < 0) 
+			/* 负数表示应用层close()后如果处于FIN_WAIT2状态那么直接关闭连接并向对端发送reset */
 			tp->linger2 = -1;
 		else if (val > sysctl_tcp_fin_timeout / HZ)
+			/* 如果val大于tcp_fin_timeout那么设置无效，等同于0, 即超时时间为tcp_fin_timeout */
 			tp->linger2 = 0;
 		else
+			/* 应用层close()后FIN_WAIT2状态会等待val秒的时间, 超时后内核直接关闭连接 */
 			tp->linger2 = val * HZ;
 		break;
 

@@ -440,7 +440,7 @@ struct tcp_sock {
 	unsigned int		keepalive_intvl;  /* time interval between keep alive probes */
 						  /* 由setsockopt设置的keepalive的探测间隔, 即探测报文之间的时间间隔 */
 
-	int			linger2;	/* 由应用层TCP_LINGER2设置, 表示FIN_WAIT2状态的超时时间
+	int			linger2;	/* 由应用层TCP_LINGER2设置, 表示在应用层close()后FIN_WAIT2状态的超时时间
 						 *  负数表示FIN_WAIT2直接关闭连接并发送RST
 						 *  0表示不设置或者设置值超过sysctl_tcp_fin_timeout(默认60秒),这时按照sysctl_tcp_fin_timeout处理
 						 *  正数表示不超过sysctl_tcp_fin_timeout的超时时间值

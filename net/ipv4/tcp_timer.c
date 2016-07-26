@@ -545,13 +545,16 @@ static void tcp_keepalive_timer (unsigned long data)
 		if (tp->linger2 >= 0) {
 			const int tmo = tcp_fin_time(sk) - TCP_TIMEWAIT_LEN;
 
+			/* tmo > 0 说明是之前tcp_fin_time() > TCP_TIMEWAIT_LEN的情况，
+			 * 继续等待tmo的FIN_WAIT2超时
+			 */
 			if (tmo > 0) {
 				tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
 				goto out;
 			}
 		}
-		tcp_send_active_reset(sk, GFP_ATOMIC);
-		goto death;
+		tcp_send_active_reset(sk, GFP_ATOMIC); /* 发送RST */
+		goto death; /* 释放sock */
 	}
 
 	/* 以下为Keepalive保活定时器 */

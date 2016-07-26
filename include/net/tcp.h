@@ -1079,6 +1079,10 @@ static inline u32 keepalive_time_elapsed(const struct tcp_sock *tp)
 /* 返回FIN_WAIT2的超时时间 */
 static inline int tcp_fin_time(const struct sock *sk)
 {
+	/* 进入前会判断linger2为负数的情况，所以这里linger2 >= 0
+	 * 如果linger2不为0说明应用层设置了FIN_WAIT2的超时时间，
+	 * 否则为默认的60秒
+	 */
 	int fin_timeout = tcp_sk(sk)->linger2 ? : sysctl_tcp_fin_timeout;
 	const int rto = inet_csk(sk)->icsk_rto;
 

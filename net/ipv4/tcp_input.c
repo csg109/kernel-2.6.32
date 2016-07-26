@@ -6246,11 +6246,18 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 				if (!sock_flag(sk, SOCK_DEAD))
 					/* Wake up lingering close() */
 					sk->sk_state_change(sk);
-				else { /* 如果应用层已经关闭了 */
+				else { /* 如果应用层已经关闭了
+					* 对应应用层先close()后内核收到对端对FIN的ACK进入FIN_WAIT2的情况
+					* 比如：
+					* 	应用层首先SHUTDOWN发送了FIN包，
+					* 	然后在对端的ACK到来之前close()了,
+					* 	现在在FIN_WAIT1收到了ACK进入FIN_WAIT2
+					*/
+
 					int tmo;
 
 					/* 如果
-					 *   应用层设置了TCP_INGER2为负数 
+					 *   应用层设置了TCP_INGER2为负数(表示FIN_WAIT2状态直接关闭sock并发送RST)
 					 *   或者 
 					 *   收到了新的数据(因为应用层已经关闭)，
 					 * 那么直接关闭sock并回复RST
@@ -6263,7 +6270,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 						return 1; /* 回复RST */
 					}
 
-					tmo = tcp_fin_time(sk); /* FIN_WAIT2状态的超时时间 */
+					tmo = tcp_fin_time(sk); /* 获取FIN_WAIT2状态的超时时间 */
 					if (tmo > TCP_TIMEWAIT_LEN) {
 						inet_csk_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
 					} else if (th->fin || sock_owned_by_user(sk)) {
@@ -6275,7 +6282,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 						 */
 						inet_csk_reset_keepalive_timer(sk, tmo);
 					} else {
-						tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+						tcp_time_wait(sk, TCP_FIN_WAIT2, tmo); /* 超时时间为tmo的TIME_WAIT(子状态还是FIN_WAIT2) */
 						goto discard;
 					}
 				}
