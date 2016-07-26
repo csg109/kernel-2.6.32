@@ -1829,6 +1829,12 @@ EXPORT_SYMBOL_GPL(tcp_set_state);
  *	closed.
  */
 
+/* 这个数组表示各个状态下应用层close()后要切换的下一个状态
+ * 注释里是原状态，值是新的状态
+ * TCP_ACTION_FIN表示切换状态需要发送FIN包, 
+ * 因为可能之前应用层SHUTDOWN时已经发送过FIN，
+ * 所以这里并不是所有状态都需要发送FIN
+ */
 static const unsigned char new_state[16] = {
   /* current state:        new state:      action:	*/
   /* (Invalid)		*/ TCP_CLOSE,
@@ -1845,14 +1851,17 @@ static const unsigned char new_state[16] = {
   /* TCP_CLOSING	*/ TCP_CLOSING,
 };
 
+/* 处理应用层close()时的状态切换
+ * 如果需要发送FIN则返回1
+ */
 static int tcp_close_state(struct sock *sk)
 {
-	int next = (int)new_state[sk->sk_state];
+	int next = (int)new_state[sk->sk_state]; /* 下一个状态 */
 	int ns = next & TCP_STATE_MASK;
 
-	tcp_set_state(sk, ns);
+	tcp_set_state(sk, ns); /* 设置新的状态 */
 
-	return next & TCP_ACTION_FIN;
+	return next & TCP_ACTION_FIN; /* 如果需要发送FIN则返回1 */
 }
 
 /*
@@ -1888,6 +1897,7 @@ void tcp_close(struct sock *sk, long timeout)
 	lock_sock(sk);
 	sk->sk_shutdown = SHUTDOWN_MASK;
 
+	/* 监听的单独处理 */
 	if (sk->sk_state == TCP_LISTEN) {
 		tcp_set_state(sk, TCP_CLOSE);
 
@@ -1901,7 +1911,7 @@ void tcp_close(struct sock *sk, long timeout)
 	 *  descriptor close, not protocol-sourced closes, because the
 	 *  reader process may not have drained the data yet!
 	 */
-	/* 释放接收队列上的skb */
+	/* 释放接收队列上的skb, 因为应用层已经关闭不再接收数据 */
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
 		u32 len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
 			  tcp_hdr(skb)->fin;
@@ -1919,6 +1929,7 @@ void tcp_close(struct sock *sk, long timeout)
 	 * Note: timeout is always zero in such a case.
 	 */
 	if (data_was_unread) {
+		/* 如果有应用层未接受的数据，那么回复RST */
 		/* Unread data was tossed, zap the connection. */
 		NET_INC_STATS_USER(sock_net(sk), LINUX_MIB_TCPABORTONCLOSE);
 		tcp_set_state(sk, TCP_CLOSE); /* 设置为CLOSE状态 */
@@ -1926,11 +1937,12 @@ void tcp_close(struct sock *sk, long timeout)
 	} else if (sock_flag(sk, SOCK_LINGER) && !sk->sk_lingertime) {
 		/* 如果设置了SO_LINGER并且timeout设置为0,
 		 * 那么直接tcp_disconnect()清理各种队列
+		 * 并且tcp_disconnect()会发送RST
 		 */
 		/* Check zero linger _after_ checking for unread data. */
-		sk->sk_prot->disconnect(sk, 0);
+		sk->sk_prot->disconnect(sk, 0); /* 调用tcp_disconnect() */
 		NET_INC_STATS_USER(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
-	} else if (tcp_close_state(sk)) {
+	} else if (tcp_close_state(sk)) { /* 处理状态切换，返回1表示需要发送FIN包 */
 		/* We FIN if the application ate all the data before
 		 * zapping the connection.
 		 */
@@ -1956,16 +1968,18 @@ void tcp_close(struct sock *sk, long timeout)
 		 * Probably, I missed some more holelets.
 		 * 						--ANK
 		 */
-		tcp_send_fin(sk);
+		tcp_send_fin(sk); /* 发送FIN包/增加FIN标志 */
 	}
 
-	/* 设置SO_LINGER后等待timeout */
+	/* 如果设置了SO_LINGER则阻塞等待对端确认所有数据(包括FIN)
+	 * 或者timeout时间超时才返回
+	 */
 	sk_stream_wait_close(sk, timeout);
 
 adjudge_to_death:
 	state = sk->sk_state;
 	sock_hold(sk);
-	sock_orphan(sk);
+	sock_orphan(sk); /* 脱离sock和socket的关系 */
 
 	/* It is the last release_sock in its life. It will remove backlog. */
 	release_sock(sk);
@@ -2054,7 +2068,9 @@ out:
 }
 
 /* These states need RST on ABORT according to RFC793 */
-
+/* 断开连接时需要给对端发送RST的状态,
+ * 这些状态的共同点是还未正常四次握手
+ */
 static inline int tcp_need_reset(int state)
 {
 	return (1 << state) &

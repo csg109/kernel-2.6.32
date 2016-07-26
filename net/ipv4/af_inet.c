@@ -431,12 +431,15 @@ int inet_release(struct socket *sock)
 		 * If the close is due to the process exiting, we never
 		 * linger..
 		 */
+		/* 如果设置了SO_LINGER，则close()会等待sk->sk_lingertime的时间
+		 * 否则close()直接返回
+		 */
 		timeout = 0;
-		if (sock_flag(sk, SOCK_LINGER) &&
-		    !(current->flags & PF_EXITING))
-			timeout = sk->sk_lingertime;
+		if (sock_flag(sk, SOCK_LINGER) && /* 如果设置了SO_LINGER */
+		    !(current->flags & PF_EXITING)) /* 进程不是正在退出 */
+			timeout = sk->sk_lingertime; /* 获取LLINGER等待的时间 */
 		sock->sk = NULL;
-		sk->sk_prot->close(sk, timeout); /* 调用tcp_close() */
+		sk->sk_prot->close(sk, timeout); /* 调用tcp_close()并传递LINGER的等待时间 */
 	}
 	return 0;
 }

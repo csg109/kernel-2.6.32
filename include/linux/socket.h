@@ -44,7 +44,9 @@ struct sockaddr {
 
 struct linger {
 	int		l_onoff;	/* Linger active		*/
+					/* 开关，1为开启，0为关闭(忽略l_linger) */
 	int		l_linger;	/* How long to linger for	*/
+					/* 等待的时间，单位为秒 */
 };
 
 #define sockaddr_storage __kernel_sockaddr_storage

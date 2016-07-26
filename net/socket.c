@@ -521,7 +521,7 @@ void sock_release(struct socket *sock)
 	if (sock->ops) {
 		struct module *owner = sock->ops->owner;
 
-		sock->ops->release(sock);
+		sock->ops->release(sock); /* TCPµ÷ÓÃinet_release */
 		sock->ops = NULL;
 		module_put(owner);
 	}

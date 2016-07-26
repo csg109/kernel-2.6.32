@@ -2298,7 +2298,7 @@ begin_fwd:
 void tcp_send_fin(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct sk_buff *skb = tcp_write_queue_tail(sk);
+	struct sk_buff *skb = tcp_write_queue_tail(sk); /* 发送队列的最后一个数据包 */
 	int mss_now;
 
 	/* Optimization, tack on the FIN if we have a queue of
@@ -2307,6 +2307,9 @@ void tcp_send_fin(struct sock *sk)
 	 */
 	mss_now = tcp_current_mss(sk);
 
+	/* 如果发送队列有数据，直接在最后一个数据包加上FIN标志，
+	 * 否则新建一个FIN包并加入发送队列中
+	 */
 	if (tcp_send_head(sk) != NULL) {
 		TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_FIN;
 		TCP_SKB_CB(skb)->end_seq++;
@@ -2326,9 +2329,9 @@ void tcp_send_fin(struct sock *sk)
 		/* FIN eats a sequence byte, write_seq advanced by tcp_queue_skb(). */
 		tcp_init_nondata_skb(skb, tp->write_seq,
 				     TCPCB_FLAG_ACK | TCPCB_FLAG_FIN);
-		tcp_queue_skb(sk, skb);
+		tcp_queue_skb(sk, skb); /* 将FIN包插入发送队列 */
 	}
-	__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_OFF);
+	__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_OFF); /* 尝试发送 */
 }
 
 /* We get here when a process closes a file descriptor (either due to

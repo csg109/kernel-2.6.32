@@ -622,16 +622,18 @@ set_rcvbuf:
 			ret = -EFAULT;
 			break;
 		}
-		if (!ling.l_onoff)
-			sock_reset_flag(sk, SOCK_LINGER);
+		if (!ling.l_onoff) /* l_onoff为0表示关闭 */
+			sock_reset_flag(sk, SOCK_LINGER); /* 清除sk中的LINGER标志 */
 		else {
 #if (BITS_PER_LONG == 32)
+			/* 32bit可能溢出 */
 			if ((unsigned int)ling.l_linger >= MAX_SCHEDULE_TIMEOUT/HZ)
 				sk->sk_lingertime = MAX_SCHEDULE_TIMEOUT;
 			else
 #endif
+				/* 设置等待的时间, 将秒转成jiffies */
 				sk->sk_lingertime = (unsigned int)ling.l_linger * HZ;
-			sock_set_flag(sk, SOCK_LINGER);
+			sock_set_flag(sk, SOCK_LINGER); /* 设置sk中的LINGER标志 */
 		}
 		break;
 
@@ -830,8 +832,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 
 	case SO_LINGER:
 		lv		= sizeof(v.ling);
-		v.ling.l_onoff	= !!sock_flag(sk, SOCK_LINGER);
-		v.ling.l_linger	= sk->sk_lingertime / HZ;
+		v.ling.l_onoff	= !!sock_flag(sk, SOCK_LINGER); /* 获取LINGER是否启用 */
+		v.ling.l_linger	= sk->sk_lingertime / HZ; /* 获取等待时间，转化成秒 */
 		break;
 
 	case SO_BSDCOMPAT:

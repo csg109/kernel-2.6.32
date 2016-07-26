@@ -98,6 +98,9 @@ void sk_stream_wait_close(struct sock *sk, long timeout)
 	if (timeout) {
 		DEFINE_WAIT(wait);
 
+		/* 等待状态不处于FINI_WAIT1/CLOSING/LAST_ACK(也就是等待对端确认所有数据)
+		 * 或者timeout时间到 才返回
+		 */
 		do {
 			prepare_to_wait(sk->sk_sleep, &wait,
 					TASK_INTERRUPTIBLE);

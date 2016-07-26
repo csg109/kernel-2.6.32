@@ -268,7 +268,7 @@ struct sock {
 	unsigned int		sk_gso_max_size;
 	int			sk_rcvlowat;
 	unsigned long 		sk_flags;
-	unsigned long	        sk_lingertime;
+	unsigned long	        sk_lingertime;		/* 用于SOCK_LINGER, 表示等待的时间, 单位是jiffies */
 	struct sk_buff_head	sk_error_queue;
 	struct proto		*sk_prot_creator;
 	rwlock_t		sk_callback_lock;
@@ -550,7 +550,7 @@ enum sock_flags {
 	SOCK_DONE,
 	SOCK_URGINLINE,
 	SOCK_KEEPOPEN,
-	SOCK_LINGER,
+	SOCK_LINGER,	/* 启用了LINGER会被置位 */
 	SOCK_DESTROY,
 	SOCK_BROADCAST,
 	SOCK_TIMESTAMP,
