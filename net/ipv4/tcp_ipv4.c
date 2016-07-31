@@ -522,20 +522,34 @@ out:
 }
 
 /* This routine computes an IPv4 TCP checksum. */
+/* 计算TCP的checksum
+ * 如果硬件支持,则只计算伪头
+ * 否则计算最终的checksum
+ */
 void tcp_v4_send_check(struct sock *sk, int len, struct sk_buff *skb)
 {
 	struct inet_sock *inet = inet_sk(sk);
 	struct tcphdr *th = tcp_hdr(skb);
 
-	if (skb->ip_summed == CHECKSUM_PARTIAL) { /* 只计算伪首部，TCP报头和TCP数据的累加由硬件完成 */
+	if (skb->ip_summed == CHECKSUM_PARTIAL) { 
+		/* 网卡支持checksum计算, CHECKSUM_PARTIAL是在tcp_sendmsg()判断网卡是否支持设置的
+		 * 只计算伪首部，TCP报头和TCP数据的累加由硬件完成 
+		 *
+		 * 因为tcp_v4_check()得到的是累加取反后的16bit的checksum, 所以这里要再取反
+		 */
 		th->check = ~tcp_v4_check(len, inet->saddr,
 					  inet->daddr, 0);
-		/* 校验和值在TCP首部的偏移 */
+		/* TCP首部相对head的偏移, 后续网卡计算checksum从这里开始计算数据包的checksum */
 		skb->csum_start = skb_transport_header(skb) - skb->head;
+		/* check字段相对TCP首部的首部, 网卡计算checksum后赋值到这里 */
 		skb->csum_offset = offsetof(struct tcphdr, check);
-	} else {
-		/* tcp_v4_check累加伪首部，获取最终的校验和。csum_partial累加TCP报头。
-		 * 那么skb->csum应该是TCP数据部分的累加，这是在从用户空间复制时顺便累加的(skb_copy_to_page)*/
+	} else { /* skb->ip_summed == CHECKSUM_NONE */
+		/* 网卡不支持计算checksum, 
+		 * 这种情况已经在tcp_sendmsg()中由skb_copy_to_page()边拷贝边计算数据部分的checksum存放到skb->csum中了.
+		 *
+		 * 这里先调用csum_partial()计算TCP首部并累加到之前计算好的数据部分的checksum, 返回的是报文的checksum,
+		 * 然后调用tcp_v4_check()累加伪头后并将32bit转成16bit的最终的checksum
+		 */
 		th->check = tcp_v4_check(len, inet->saddr, inet->daddr,
 					 csum_partial(th,
 						      th->doff << 2,
@@ -1515,24 +1529,38 @@ static struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb)
 	return sk;
 }
 
+/* 初步校验TCP的checksum,
+ * 	返回0表示校验成功或延迟校验,返回1表示校验错误
+ *
+ * 如果硬件已经计算好报文的checksum，则直接计算伪头并校验
+ * 如果数据包长度不超过76字节，则也直接计算并校验
+ * 否则只计算伪头保存在skb->csum中,等到tcp_checksum_complete()再计算校验
+ */
 static __sum16 tcp_v4_checksum_init(struct sk_buff *skb)
 {
 	const struct iphdr *iph = ip_hdr(skb);
 
-	if (skb->ip_summed == CHECKSUM_COMPLETE) { /* 已经由硬件计算完payload的checksum，还需要计算伪头 */
+	/* 已经由硬件计算完payload的checksum保存在skb->csum中，还需要计算伪头然后校验
+	 * 伪头计算包括源IP地址、目的IP地址、TCP数据包长度(包括首部和数据)、4层协议号(IPPROTO_TCP)
+	 * 校验时如果计算得到的checksum结果为0则表示校验正确
+	 */
+	if (skb->ip_summed == CHECKSUM_COMPLETE) { 
 		if (!tcp_v4_check(skb->len, iph->saddr,
-				  iph->daddr, skb->csum)) { /* 校验成功 */
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
+				  iph->daddr, skb->csum)) { /* 校验正确 */
+			skb->ip_summed = CHECKSUM_UNNECESSARY; /* 设置为检验完成 */
 			return 0;
 		}
 	}
 
-	/* 先累加伪头保存起来,数据部分延迟到后面再接着计算 */
+	/* 这里说明网卡没有计算payload的checksum，需要TCP自己计算整个数据包的校验和 */
+
+	/* 这里先计算伪头并保存在skb->csum中, 数据部分延迟到后面再接着计算后校验 */
 	skb->csum = csum_tcpudp_nofold(iph->saddr, iph->daddr,
 				       skb->len, IPPROTO_TCP, 0);
 
-	if (skb->len <= 76) { /* 长度小的话直接接着计算校验和 */
-		return __skb_checksum_complete(skb); /* 返回0表示全部校验完成 */
+	/* 如果数据包数据长度小的话直接接着计算校验和然后校验 */
+	if (skb->len <= 76) { 
+		return __skb_checksum_complete(skb); /* 返回0表示校验正确 */
 	}
 	return 0;
 }
@@ -1572,10 +1600,10 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 
 	/* 这里tcp_checksum_complete()是继续tcp_v4_rcv()中tcp_v4_checksum_init()中的计算
 	 * tcp_v4_checksum_init()对于还未检验完的会先将伪头累加到skb->csum中，
-	 * 然后tcp_checksum_complete()接着计算所有数据的累加，然后加上之前计算的伪头再取反得出checksum
+	 * 然后tcp_checksum_complete()接着计算所有数据的累加，然后加上之前计算的伪头再取反得出checksum校验
 	 */
 	if (skb->len < tcp_hdrlen(skb) || tcp_checksum_complete(skb))
-		goto csum_err;
+		goto csum_err; /* checksum出错 */
 
 	if (sk->sk_state == TCP_LISTEN) {
 		struct sock *nsk = tcp_v4_hnd_req(sk, skb); /* 最后的ACK走这里 */
@@ -1657,10 +1685,10 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	 * 3. 否则只累加伪头(如果长度小于76则直接验证checksum)，
 	 *    等到tcp_v4_do_rcv()由tcp_checksum_complete()接着计算,
 	 *    或等到tcp_rcv_established()中由tcp_checksum_complete_user()接着计算,
-	 *    这样的目的是为了延迟计算checksum
+	 *    这样的目的是为了延迟计算数据部分的checksum
 	 */
 	if (!skb_csum_unnecessary(skb) && tcp_v4_checksum_init(skb)) 
-		goto bad_packet;
+		goto bad_packet; /* checksum出错 */
 
 	/* 由于上面的pskb_may_pull()可能改变skb的缓冲区结构，所以th要重新获取 */
 	th = tcp_hdr(skb);
@@ -1673,11 +1701,13 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	TCP_SKB_CB(skb)->flags	 = iph->tos;
 	TCP_SKB_CB(skb)->sacked	 = 0;
 
+	/* 查找sk */
 	sk = __inet_lookup_skb(&tcp_hashinfo, skb, th->source, th->dest);
 	if (!sk)
 		goto no_tcp_socket;
 
 process:
+	/* 如果是TIME_WAIT则特殊处理 */
 	if (sk->sk_state == TCP_TIME_WAIT)
 		goto do_time_wait;
 
@@ -1699,7 +1729,7 @@ process:
 
 	bh_lock_sock_nested(sk);
 	ret = 0;
-	if (!sock_owned_by_user(sk)) {
+	if (!sock_owned_by_user(sk)) { /* 如果进程没有持有sock */
 #ifdef CONFIG_NET_DMA
 		struct tcp_sock *tp = tcp_sk(sk);
 		if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
@@ -1709,10 +1739,17 @@ process:
 		else
 #endif
 		{
+			/* tcp_prequeue返回0说明需要现在接收，
+			 * 返回1说明数据包加入prequeue队列了，唤醒阻塞在tcp_recvmsg的进程来接收
+			 */
 			if (!tcp_prequeue(sk, skb))
 				ret = tcp_v4_do_rcv(sk, skb);
 		}
-	} else if (unlikely(sk_add_backlog(sk, skb))) {
+	/* 如果进程持有sock, 那么先把这个skb进入sk->sk_backlog队列中
+	 * 等待进程释放sock后会接收backlog中的skb
+	 */
+	} else if (unlikely(sk_add_backlog(sk, skb))) { /* 先加skb加入后备队列中 */
+		/* 如果接收缓存满，那skb直接丢弃 */
 		bh_unlock_sock(sk);
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;

@@ -1560,30 +1560,34 @@ static void __lock_sock(struct sock *sk)
 	DEFINE_WAIT(wait);
 
 	for (;;) {
+		/* 加入等待队列中 */
 		prepare_to_wait_exclusive(&sk->sk_lock.wq, &wait,
 					TASK_UNINTERRUPTIBLE);
-		spin_unlock_bh(&sk->sk_lock.slock);
-		schedule();
-		spin_lock_bh(&sk->sk_lock.slock);
-		if (!sock_owned_by_user(sk))
+		spin_unlock_bh(&sk->sk_lock.slock); /* 睡眠之前先释放sk_lock的锁 */
+		schedule(); /* 调度开始睡眠 */
+		spin_lock_bh(&sk->sk_lock.slock); /* 唤醒后继续持有锁 */
+		if (!sock_owned_by_user(sk)) /* 如果其他进程还在使用sock那继续睡眠 */
 			break;
 	}
-	finish_wait(&sk->sk_lock.wq, &wait);
+	/* 到这里已经被唤醒了并且其他进程已经不再使用sock */
+	finish_wait(&sk->sk_lock.wq, &wait); /* 从等待队列中删掉 */
 }
 
+/* 接收sk->sk_backlog后备队列的数据包 */
 static void __release_sock(struct sock *sk)
 {
 	struct sk_buff *skb = sk->sk_backlog.head;
 
 	do {
 		sk->sk_backlog.head = sk->sk_backlog.tail = NULL;
+		/* 处理backlog队列不需要对sock加锁 */
 		bh_unlock_sock(sk);
 
 		do {
 			struct sk_buff *next = skb->next;
 
 			skb->next = NULL;
-			sk_backlog_rcv(sk, skb);
+			sk_backlog_rcv(sk, skb); /* 调用tcp_v4_do_rcv()接收skb */
 
 			/*
 			 * We are in process context here with softirqs
@@ -1616,6 +1620,7 @@ static void __release_sock(struct sock *sk)
  * We check receive queue before schedule() only as optimization;
  * it is very likely that release_sock() added new data.
  */
+/* 睡眠等待接收新的数据，返回1表示接收到了新的数据 */
 int sk_wait_data(struct sock *sk, long *timeo)
 {
 	int rc;
@@ -1623,6 +1628,7 @@ int sk_wait_data(struct sock *sk, long *timeo)
 
 	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
+	/* 睡眠等待接收队列不为空(接收了新数据)或者超时返回 */
 	rc = sk_wait_event(sk, timeo, !skb_queue_empty(&sk->sk_receive_queue));
 	clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 	finish_wait(sk->sk_sleep, &wait);
@@ -2013,9 +2019,12 @@ void lock_sock_nested(struct sock *sk, int subclass)
 {
 	might_sleep();
 	spin_lock_bh(&sk->sk_lock.slock);
+	/* 如果有其他进程持有sock，那么需要先加入等待队列睡眠等待唤醒
+	 * 在其他进程放弃sock时会调用release_sock()，会唤醒等待队列中的进程
+	 */
 	if (sk->sk_lock.owned)
-		__lock_sock(sk);
-	sk->sk_lock.owned = 1;
+		__lock_sock(sk); /* 睡眠返回后已经唤醒 */
+	sk->sk_lock.owned = 1; /* 设置被持有 */
 	spin_unlock(&sk->sk_lock.slock);
 	/*
 	 * The sk_lock has mutex_lock() semantics here:
@@ -2033,11 +2042,16 @@ void release_sock(struct sock *sk)
 	mutex_release(&sk->sk_lock.dep_map, 1, _RET_IP_);
 
 	spin_lock_bh(&sk->sk_lock.slock);
-	if (sk->sk_backlog.tail)
-		__release_sock(sk);
+	/* 如果后备队列有数据包则接收，
+	 * 即在sock被应用层持有时接收的数据包都先保存到sk_backlog中
+	 */
+	if (sk->sk_backlog.tail) 
+		__release_sock(sk); /* 接收backlog队列 */
 	sk->sk_lock.owned = 0;
+	
+	/* 如果有其他进程在等待本sock，则唤醒 */
 	if (waitqueue_active(&sk->sk_lock.wq))
-		wake_up(&sk->sk_lock.wq);
+		wake_up(&sk->sk_lock.wq); /* 唤醒等待队列中的进程 */
 	spin_unlock_bh(&sk->sk_lock.slock);
 }
 EXPORT_SYMBOL(release_sock);

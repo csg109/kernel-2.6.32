@@ -45,6 +45,7 @@ extern __sum16 ip_fast_csum(const void *iph, unsigned int ihl);
 /*
  * Fold a partial checksum
  */
+/* 将32位的累加值按照16位相加后取反,得到最终的checksum */
 static inline __sum16 csum_fold(__wsum csum)
 {
 	u32 sum = (__force u32)csum;
@@ -63,6 +64,12 @@ csum_tcpudp_nofold(__be32 saddr, __be32 daddr, unsigned short len,
 		unsigned short proto, __wsum sum);
 #endif
 
+/* 计算TCP伪头并累加数据的checksum, 得到的是累加并取反后的16bit的checksum
+ * 调用前需要先将TCP数据(包括首部和数据)按4字节累加到参数sum中。
+ *
+ * 通过调用csum_tcpudp_nofold()计算伪头并累加TCP数据得到32bit的checksum,
+ * 再调用csum_fold()转为成16bit取反后的最终checksum
+ */
 static inline __sum16
 csum_tcpudp_magic(__be32 saddr, __be32 daddr, unsigned short len,
 		  unsigned short proto, __wsum sum)

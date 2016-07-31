@@ -111,8 +111,8 @@ static inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
 					unsigned short proto,
 					__wsum sum)
 {
-	asm("addl %1, %0	;\n" /* 累加daddr */
-	    "adcl %2, %0	;\n" /* 累加saddr */
+	asm("addl %1, %0	;\n" /* 累加saddr */
+	    "adcl %2, %0	;\n" /* 累加daddr */
 	    "adcl %3, %0	;\n" /* 累加len(2字节), proto, 0 */
 	    "adcl $0, %0	;\n" /* 加上进位 */
 	    : "=r" (sum)

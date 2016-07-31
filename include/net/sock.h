@@ -84,9 +84,15 @@ SOCK_DEBUG(struct sock *sk, const char *msg, ...)
  * mini-semaphore synchronizes multiple users amongst themselves.
  */
 typedef struct {
-	spinlock_t		slock;
-	int			owned;
-	wait_queue_head_t	wq;
+	spinlock_t		slock; 	/* 控制sock的自旋锁
+					 * 软中断持有该锁住整个sock
+					 * 进程调用时只锁住本结构,这样应用层接收/发送时软中断还能接收数据包到backlog或prequeue
+					 */
+	int			owned; 	/* 为1表示有进程持有sock */
+	wait_queue_head_t	wq;	/* 用于多个进程持有sock的等待队列, 当不止一个应用层需要持有sock时，
+					 * 如果sock已经被持有(owned为1),
+					 * 那么需要加入等待队列睡眠等待持有sock的进程放弃sock后唤醒
+					 */
 	/*
 	 * We express the mutex-alike socket_lock semantics
 	 * to the lock validator by explicitly managing
@@ -235,11 +241,15 @@ struct sock {
 	int			sk_rcvbuf; 	/* TCP接收缓冲区的大小 (包括skb结构本身)
 						 * 即包括应用层数据、TCP协议头、sk_buff和skb_shared_info结构，tcp_adv_win_scale微调，单位为字节
 						 */
-	socket_lock_t		sk_lock;
+	socket_lock_t		sk_lock;	/* 用来控制进程持有sock的结构 */
 	/*
 	 * The backlog queue is special, it is always used with
 	 * the per-socket spinlock held and requires low latency
 	 * access. Therefore we special case it's implementation.
+	 */
+ 	/* 后备队列,
+	 * 当tcp_v4_rcv接收数据包时sock被应用层持有，
+	 * 那么数据包先加入sk_backlog中
 	 */
 	struct {
 		struct sk_buff *head;
@@ -301,6 +311,7 @@ struct sock {
 	void			(*sk_data_ready)(struct sock *sk, int bytes);
 	void			(*sk_write_space)(struct sock *sk);
 	void			(*sk_error_report)(struct sock *sk);
+	/* 用于接收sk->sk_backlog后备队列函数, tcp为tcp_v4_do_rcv  */
   	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);  
 	void                    (*sk_destruct)(struct sock *sk);
@@ -315,6 +326,7 @@ struct sock {
  *     - should be used to access items in struct sock_extended
  */
 
+/* 这个结构体接在sock之后(TCP接在tcp_sock结构之后) */
 struct sock_extended {
 
 	/*
@@ -336,6 +348,11 @@ struct sock_extended {
 
 	/*
 	 * Expansion space for sock backlog length
+	 */
+ 	/* 后备队列的大小，
+	 * 当tcp_v4_rcv接收数据包时sock被应用层持有，
+	 * 那么数据包先加入sk->sk_backlog
+	 * 这里的len指的是sk->sk_backlog中排队的数据包占用的内存大小
 	 */
 	struct {
 		int len;
@@ -646,26 +663,31 @@ static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
  */
 static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff *skb)
 {
+	/* qsize为接收队列和后备队列占用的缓存大小 */
 	unsigned int qsize = sk_extended(sk)->sk_backlog.len +
 			     atomic_read(&sk->sk_rmem_alloc);
 
+	/* 如果加上本skb的大小已经大于接收缓存，
+	 * 那么接收队列满, 本skb就不加入后备队列，直接丢弃
+	 */
 	return qsize + skb->truesize > sk->sk_rcvbuf;
 }
 
 /* The per-socket spinlock must be held here. */
 static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 {
-	if (sk_rcvqueues_full(sk, skb))
+	if (sk_rcvqueues_full(sk, skb)) /* 接收缓存满，该数据包直接丢弃 */
 		return -ENOBUFS;
 
-	__sk_add_backlog(sk, skb);
-	sk_extended(sk)->sk_backlog.len += skb->truesize;
+	__sk_add_backlog(sk, skb); /* 将skb先加入sk->sk_backlog队列中 */
+	sk_extended(sk)->sk_backlog.len += skb->truesize; /* 增加sk->sk_backlog数据包占用内存大小 */
 	return 0;
 }
 
+/* 接收后备队列中的数据包 */
 static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
-	return sk->sk_backlog_rcv(sk, skb);
+	return sk->sk_backlog_rcv(sk, skb); /* tcp实际调用tcp_v4_do_rcv */
 }
 
 static inline void sock_rps_reset_flow(const struct sock *sk)
@@ -687,6 +709,10 @@ static inline void sock_rps_save_rxhash(struct sock *sk, u32 rxhash)
 	}
 }
 
+/* 睡眠前会先release_sock
+ * 之后再检查__condition, 因为release_sock会尝试接收backlog队列，
+ * 如果backlog有数据那么也就不需要睡眠了
+ */
 #define sk_wait_event(__sk, __timeo, __condition)			\
 	({	int __rc;						\
 		release_sock(__sk);					\

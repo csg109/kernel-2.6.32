@@ -93,6 +93,7 @@ struct inet_cork {
 int sysctl_ip_default_ttl __read_mostly = IPDEFTTL;
 
 /* Generate a checksum for an outgoing IP datagram. */
+/* 计算IP层的checksum, IP层只针对IP头计算 */
 __inline__ void ip_send_check(struct iphdr *iph)
 {
 	iph->check = 0;
@@ -104,7 +105,7 @@ int __ip_local_out(struct sk_buff *skb)
 	struct iphdr *iph = ip_hdr(skb);
 
 	iph->tot_len = htons(skb->len);
-	ip_send_check(iph);
+	ip_send_check(iph); /* 计算IP层的checksum */
 	return nf_hook(PF_INET, NF_INET_LOCAL_OUT, skb, NULL, skb_dst(skb)->dev,
 		       dst_output);
 }

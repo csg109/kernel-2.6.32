@@ -910,7 +910,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	int err, copied;
 	long timeo;
 
-	lock_sock(sk);
+	lock_sock(sk); /* 持有sock,可能睡眠等待其他进程退出 */
 	TCP_CHECK_TIMER(sk);
 
 	flags = msg->msg_flags;
@@ -1282,7 +1282,8 @@ static void tcp_prequeue_process(struct sock *sk)
 
 	/* RX process wants to run with disabled BHs, though it is not
 	 * necessary */
-	local_bh_disable();
+	local_bh_disable(); /* 接收数据包前先禁用本地软中断 */
+	/* 循环处理prequeue中的数据包 */
 	while ((skb = __skb_dequeue(&tp->ucopy.prequeue)) != NULL)
 		sk_backlog_rcv(sk, skb);
 	local_bh_enable();
@@ -1540,6 +1541,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		if (!sysctl_tcp_low_latency && tp->ucopy.task == user_recv) {
 			/* Install new reader */
+			/* 设置正在读的进程为current */
 			if (!user_recv && !(flags & (MSG_TRUNC | MSG_PEEK))) {
 				user_recv = current;
 				tp->ucopy.task = user_recv;
@@ -1605,10 +1607,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				copied += chunk;
 			}
 
+			/* 如果接收队列sk_receive_queue中已经没有数据可读且prequeue有数据包，
+			 * 那么处理prequeue队列接收数据包
+			 */
 			if (tp->rcv_nxt == tp->copied_seq &&
 			    !skb_queue_empty(&tp->ucopy.prequeue)) {
 do_prequeue:
-				tcp_prequeue_process(sk);
+				tcp_prequeue_process(sk); /* 接收prequeue的数据包 */
 
 				if ((chunk = len - tp->ucopy.len) != 0) {
 					NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMPREQUEUE, chunk);

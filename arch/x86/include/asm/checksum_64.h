@@ -110,11 +110,6 @@ csum_tcpudp_nofold(__be32 saddr, __be32 daddr, unsigned short len,
  * Returns the 16bit pseudo header checksum the input data already
  * complemented and ready to be filled in.
  */
-/* csum_tcpudp_magic()产生最终的校验和。
- * 首先需要先将按4字节累加伪首部到sum中。
- * 其次，累加sum的低16位、sum的高16位，并且对累加的结果取反。
- * 最后，截取sum的高16位，作为校验和。
- */
 static inline __sum16 csum_tcpudp_magic(__be32 saddr, __be32 daddr,
 					unsigned short len,
 					unsigned short proto, __wsum sum)

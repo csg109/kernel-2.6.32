@@ -632,21 +632,32 @@ fault:
 	return -EFAULT;
 }
 
+/*
+ * 校验checksum，返回0表示校验正确
+ * 调用前需要提前先算好伪头的checksum保存在skb->csum中，
+ * 并且skb->data指向TCP首部, 参数len为TCP数据包长度(包括首部和数据),
+ * 然后函数会调用skb_checksum和csum_fold计算checksum并校验
+ */
 __sum16 __skb_checksum_complete_head(struct sk_buff *skb, int len)
 {
 	__sum16 sum;
 
-	sum = csum_fold(skb_checksum(skb, 0, len, skb->csum)); /* 计算校验和，先累加再取反 */
-	if (likely(!sum)) {
+	/* 调用skb_checksum累加首部和数据部分的32bit的checksum,
+	 * 然后调用csum_fold得到取反后16bit的checksum
+	 */
+	sum = csum_fold(skb_checksum(skb, 0, len, skb->csum));
+	if (likely(!sum)) { /* 校验正确 */
 		if (unlikely(skb->ip_summed == CHECKSUM_COMPLETE))
 			netdev_rx_csum_fault(skb->dev);
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
+		skb->ip_summed = CHECKSUM_UNNECESSARY; /* 校验完成 */
 	}
 	return sum;
 }
 EXPORT_SYMBOL(__skb_checksum_complete_head);
 
-/* 计算skb的校验和 */
+/* 计算并校验skb的checksum, 返回0表示校验成功
+ * 调用前需要提前先算好伪头的checksum保存在skb->csum中，
+ */
 __sum16 __skb_checksum_complete(struct sk_buff *skb)
 {
 	return __skb_checksum_complete_head(skb, skb->len);

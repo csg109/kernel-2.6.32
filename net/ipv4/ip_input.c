@@ -456,7 +456,7 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 
 	iph = ip_hdr(skb);
 
-	/* 开始校验ip头,也就是开始三层校验 */
+	/* 开始校验ip头checksum,也就是开始三层校验 */
 	if (unlikely(ip_fast_csum((u8 *)iph, iph->ihl)))
 		goto inhdr_error;
 

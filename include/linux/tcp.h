@@ -268,13 +268,14 @@ struct tcp_sock {
 	/* inet_connection_sock has to be the first member of tcp_sock */
 	struct inet_connection_sock	inet_conn;
 	u16	tcp_header_len;	/* Bytes of tcp header to send		*/
+				/* TCP首部长度 */
 	u16	xmit_size_goal_segs; /* Goal for segmenting output packets */
 
 /*
  *	Header prediction flags
  *	0x5?10 << 16 + snd_wnd in net byte order
  */
-	__be32	pred_flags;
+	__be32	pred_flags;	/* 用于首部预测,如果TCP首部第三个字节相同则走快速路径 */
 
 /*
  *	RFC793 variables by their proper names. This means you can
@@ -293,10 +294,14 @@ struct tcp_sock {
 
 	/* Data for direct copy to user */
 	struct {
-		struct sk_buff_head	prequeue;
-		struct task_struct	*task;
+		struct sk_buff_head	prequeue;	/* prequeue队列，当进程读取时(tcp_recvmsg())数据没读够,导致阻塞
+							 * 软中断收到skb后会将skb加入prequeue队列
+							 */
+		struct task_struct	*task; 		/* 不等于null，表示进程正在读数据
+							 * 由tcp_recvmsg设置
+							 */
 		struct iovec		*iov;
-		int			memory;
+		int			memory;		/* 表示prequeue队列中skb占用的缓存大小 */
 		int			len;
 #ifdef CONFIG_NET_DMA
 		/* members for async copy */

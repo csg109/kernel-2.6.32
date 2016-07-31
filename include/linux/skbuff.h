@@ -32,17 +32,22 @@
 #include <linux/dma-mapping.h>
 
 /* Don't change this without changing skb_csum_unnecessary! */
-#define CHECKSUM_NONE 0		/* 接收时，表示skb->csum中的校验值是无意义的，需要L4层自己校验payload和伪头。
-				 * 有可能是硬件检验出错或者硬件没有校验功能、协议栈软件更改如pskb_trim_rcsum函数
-				 * 发送时，表示协议栈计算好了校验值，网卡设备不需要做任何事 
+#define CHECKSUM_NONE 0		/* 接收时:
+				 * 	表示skb->csum中的校验值是无意义的，需要L4层计算报文checksum
+				 * 	有可能是硬件检验出错或者硬件没有校验功能、协议栈软件更改了数据包(如pskb_trim_rcsum())
+				 * 发送时:
+				 * 	表示网卡不支持checksum计算,需要由协议栈计算checksum(包括伪头、协议头、数据部分)
 				 */
-#define CHECKSUM_UNNECESSARY 1	/* 接收时，表示不需要校验或已经校验完，如回环包不需要计算校验和
+#define CHECKSUM_UNNECESSARY 1	/* 接收时:
+				 *	表示checksum已经校验正确或不需要校验(回环包不需要校验)
 				 */
-#define CHECKSUM_COMPLETE 2	/* 接收时，表示网卡或协议栈已经计算了L4层payload的校验，
-				 * 并且skb->csum已经被赋值，
-				 * 此时L4层的接收者只需要加伪头并验证校验结果 
+#define CHECKSUM_COMPLETE 2	/* 接收时:
+				 *	表示网卡已经计算了L4层报文的checksum(包括首部和数据),并且存放在skb->csum中
+				 * 	此时L4层的接收者只需要计算伪头累加并校验结果
 				 */
-#define CHECKSUM_PARTIAL 3	/* 发送时，表示协议栈算好了伪头, 需要硬件计算payload的checksum。*/
+#define CHECKSUM_PARTIAL 3	/* 发送时:
+				 *	表示网卡支持checksum计算,协议栈只需要计算伪头的checksum
+				 */
 
 #define SKB_DATA_ALIGN(X)	(((X) + (SMP_CACHE_BYTES - 1)) & \
 				 ~(SMP_CACHE_BYTES - 1))
@@ -398,17 +403,24 @@ struct sk_buff {
 				data_len; 
 	__u16			mac_len, /* 这个长度表示mac头的长度(2层的头的长度) */
 				hdr_len; /* 这个主要用于clone的时候，它表示clone的skb的头的长度 */
-	/* 校验相关的域 */
-	union { 			/* 用于L4层校验 */
-		__wsum		csum; 	/* 用于接收时
-					 * 存放硬件或者软件计算的payload的checksum,不包括伪头，
-					 * 但是是否有意义由skb->ip_summed的值决定 (为CHECKSUM_COMPLETE)
+	/* 与ip_summed成员用于L4层checksum */
+	union {
+		__wsum		csum; 	/* 接收时:
+					 *   当ip_summed == CHECKSUM_COMPLETE 时:
+					 * 	csum存放网卡计算报文的checksum(包括首部和数据),但是不包括伪头,
+					 *	这时只需要计算伪头再累加即可校验
+					 *   当ip_summed == CHECKSUM_NONE 时:
+					 * 	csum的值无意义,这时L4层需要自己计算checksum
+					 * 	这时TCP会先计算伪头的checksum保存在csum,后续再计算报文然后校验
+					 *   TCP参考tcp_v4_checksum_init()和tcp_checksum_complete()
+					 *
+					 * 发送时:
+					 *   当网卡不支持checksum计算, 应用层tcp_sendmsg()时
+					 *   由skb_copy_to_page()边拷贝边计算数据部分的checksum存放到csum中
 					 */
-		struct { 		/* 用于发送时 
-					 * 只在硬件支持计算校验值的情况下才有意义
-					 */
-			__u16	csum_start;	/* 表示硬件网卡将要计算的校验值的地址 */
-			__u16	csum_offset;	/* 表示最后要填充校验值的偏移 */
+		struct { 		/* 仅用于发送时网卡支持checksum的情况 */
+			__u16	csum_start;  /* TCP首部相对head的偏移, 后续网卡计算checksum从这里开始计算数据包的checksum */
+			__u16	csum_offset; /* check字段相对TCP首部的首部, 网卡计算checksum后赋值到这里 */
 		};
 	};
 	__u32			priority; 	/* 优先级，主要用于QOS */
@@ -2153,10 +2165,10 @@ extern void skb_tstamp_tx(struct sk_buff *orig_skb,
 extern __sum16 __skb_checksum_complete_head(struct sk_buff *skb, int len);
 extern __sum16 __skb_checksum_complete(struct sk_buff *skb);
 
-/* 返回1表示该skb不需要验证L4层checksum */
+/* 返回1表示该skb已经校验完checksum或者不需要验证L4层checksum(比如本地环回) */
 static inline int skb_csum_unnecessary(const struct sk_buff *skb)
 {
-	return skb->ip_summed & CHECKSUM_UNNECESSARY;
+	return skb->ip_summed & CHECKSUM_UNNCESSARY;
 }
 
 /**

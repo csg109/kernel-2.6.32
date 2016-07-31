@@ -107,6 +107,12 @@ out:
  *	This is a version of ip_compute_csum() optimized for IP headers,
  *	which always checksum on 4 octet boundaries.
  */
+/* 计算/校验IP层的checksum
+ * @iph: IP头的地址
+ * @ihl: IP头的ihl字段
+ * 如果是计算checksum, iph->check需要先初始化为0，函数返回checksum
+ * 如果是校验checksum, 返回0表示校验正确
+ */
 __sum16 ip_fast_csum(const void *iph, unsigned int ihl)
 {
 	return (__force __sum16)~do_csum(iph, ihl*4);
@@ -180,6 +186,7 @@ csum_partial_copy(const void *src, void *dst, int len, __wsum sum)
 EXPORT_SYMBOL(csum_partial_copy);
 
 #ifndef csum_tcpudp_nofold
+/* 计算伪头并累加到sum中,得到32bit累加值 */
 __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
 			unsigned short len,
 			unsigned short proto,

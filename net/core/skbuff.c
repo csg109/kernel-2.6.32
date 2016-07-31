@@ -997,7 +997,7 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 	/* Copy only real data... and, alas, header. This should be
 	 * optimized for the cases when header is void. */
 #ifdef NET_SKBUFF_DATA_USES_OFFSET
-	memcpy(data + nhead, skb->head, skb->tail); /* 拷贝有效数据 */
+	memcpy(data + nhead, skb->head, skb->tail); /* 拷贝线性区的有效数据 */
 #else
 	memcpy(data + nhead, skb->head, skb->tail - skb->head);
 #endif
@@ -1891,19 +1891,33 @@ fault:
 EXPORT_SYMBOL(skb_store_bits);
 
 /* Checksum skb data. */
-
+/* 计算skb的checksum,得到32bit的累加值,后续可以调用csum_fold()得到16bit取反后的checksum
+ * 	本函数可以计算数据包首部和数据部分的checksum, 
+ * 	如果需要累加伪头的checksum需要先计算好伪头保存在csum变量中
+ * @skb: 需要计算checksum的数据包
+ * @offset: 计算起始相对skb->data的偏移,
+ * 	比如TCP数据包为TCP首部相对skb->data的偏移(TCP checksum包括首部和数据)
+ * @len: 需要计算的长度
+ * 	比如TCP数据包为TCP首部和数据部分长度之和
+ * @csum: 基础csum, 用于传递原来已经计算好的伪头的checksum
+ * 	比如TCP伪头的计算:csum = csum_tcpudp_nofold(iph->saddr, iph->daddr, skb->len, IPPROTO_TCP, 0);
+ * 
+ * return: 返回skb的32bit的checksum
+ */
 __wsum skb_checksum(const struct sk_buff *skb, int offset,
 			  int len, __wsum csum)
 {
-	int start = skb_headlen(skb);
-	int i, copy = start - offset;
+	int start = skb_headlen(skb); /* 线性区长度 */
+	int i, copy = start - offset; /* copy为线性空间中的数据包长度，包括首部和数据 */
 	struct sk_buff *frag_iter;
 	int pos = 0;
 
 	/* Checksum header. */
+	/* 先计算线性区中的checksum累加到csum */
 	if (copy > 0) {
-		if (copy > len)
+		if (copy > len) /* 需要计算的长度小于线性区的长度(一般不会这么用) */
 			copy = len;
+		/* 计算线性区中TCP的checksum, 并累加csum(csum不为0的话一般初始化为伪头的checksum) */
 		csum = csum_partial(skb->data + offset, copy, csum);
 		if ((len -= copy) == 0)
 			return csum;
@@ -1911,6 +1925,7 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 		pos	= copy;
 	}
 
+	/* 遍历分页中数据的checksum累加到csum */
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		int end;
 
@@ -1937,6 +1952,7 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 		start = end;
 	}
 
+	/* 计算分段的checksum累加到csum */
 	skb_walk_frags(skb, frag_iter) {
 		int end;
 
@@ -1947,6 +1963,7 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 			__wsum csum2;
 			if (copy > len)
 				copy = len;
+			/* 使用了递归计算checksum */
 			csum2 = skb_checksum(frag_iter, offset - start,
 					     copy, 0);
 			csum = csum_block_add(csum, csum2, pos);
@@ -1959,7 +1976,7 @@ __wsum skb_checksum(const struct sk_buff *skb, int offset,
 	}
 	BUG_ON(len);
 
-	return csum;
+	return csum; /* 返回计算得到的checksum */
 }
 EXPORT_SYMBOL(skb_checksum);
 

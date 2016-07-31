@@ -365,7 +365,7 @@ static inline void tcp_clear_options(struct tcp_options_received *rx_opt)
 
 #define	TCP_ECN_OK		1	/* 支持ECN */
 #define	TCP_ECN_QUEUE_CWR	2	/* 表示发送发进入拥塞状态 */
-#define	TCP_ECN_DEMAND_CWR	4
+#define	TCP_ECN_DEMAND_CWR	4	/* 表示本端(接收端)需要在数据包中携带ECE标志通知对端(发送端) */
 #define	TCP_ECN_SEEN		8
 
 static __inline__ void
@@ -550,11 +550,14 @@ static inline u32 __tcp_set_rto(const struct tcp_sock *tp)
 	return (tp->srtt >> 3) + tp->rttvar;
 }
 
+/* 设置首部预测，如果下个数据包首部的第三个字节有且仅有
+ * 相同的首部长度、ACK位、接收窗口则预测成功 
+ */
 static inline void __tcp_fast_path_on(struct tcp_sock *tp, u32 snd_wnd)
 {
-	tp->pred_flags = htonl((tp->tcp_header_len << 26) |
-			       ntohl(TCP_FLAG_ACK) |
-			       snd_wnd);
+	tp->pred_flags = htonl((tp->tcp_header_len << 26) | /* 首部长度单位是4字节,相当于左移28-2位 */
+			       ntohl(TCP_FLAG_ACK) |	/* ACK位 */
+			       snd_wnd);	/* 对方接收窗口大小 */
 }
 
 static inline void tcp_fast_path_on(struct tcp_sock *tp)
@@ -566,6 +569,7 @@ static inline void tcp_fast_path_check(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	/* 只有当乱序队列为空、本端非零窗口、接收缓存有剩余、非紧急数据时才启用首部预测 */
 	if (skb_queue_empty(&tp->out_of_order_queue) &&
 	    tp->rcv_wnd &&
 	    atomic_read(&sk->sk_rmem_alloc) < sk->sk_rcvbuf &&
@@ -905,7 +909,9 @@ static inline void tcp_update_wl(struct tcp_sock *tp, u32 seq)
 /*
  * Calculate(/check) TCP checksum
  */
-/* 计算TCP校验和，需要自己先将除了伪头的数据累加保存在base中 */
+/* 计算TCP伪头并累加数据的checksum, 得到的是累加并取反后的16bit的checksum
+ * 调用前需要先将除了伪头的数据按32bit累加保存在base中
+ */
 static inline __sum16 tcp_v4_check(int len, __be32 saddr,
 				   __be32 daddr, __wsum base)
 {
@@ -917,6 +923,7 @@ static inline __sum16 __tcp_checksum_complete(struct sk_buff *skb)
 	return __skb_checksum_complete(skb);
 }
 
+/* 返回0说明校验正确 */
 static inline int tcp_checksum_complete(struct sk_buff *skb)
 {
 	return !skb_csum_unnecessary(skb) &&
@@ -951,16 +958,26 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	/* tp->ucopy.task不等于null，表示进程正在读取数据，
+	 * 而进入函数的条件又是进程没有锁住(sk->sk_lock.owned ==0),
+	 * 出现这种现象的唯一情况就是进程没有读够想要的数据，休眠了
+	 */
 	if (sysctl_tcp_low_latency || !tp->ucopy.task)
 		return 0;
 
+	/* 先将skb加入prequeue队列 */
 	__skb_queue_tail(&tp->ucopy.prequeue, skb);
 	tp->ucopy.memory += skb->truesize;
+
+	/* 如果prequeue中的skb已经超过接收缓存那么先接收prequeue中的skb
+	 * 因为此时sk_receive_queue肯定是空的，所以只需判读prequeue的大小
+	 */
 	if (tp->ucopy.memory > sk->sk_rcvbuf) {
 		struct sk_buff *skb1;
 
-		BUG_ON(sock_owned_by_user(sk));
+		BUG_ON(sock_owned_by_user(sk)); /* 这是进入本函数的条件 */
 
+		/* 循环接收prequeue中的skb */
 		while ((skb1 = __skb_dequeue(&tp->ucopy.prequeue)) != NULL) {
 			sk_backlog_rcv(sk, skb1);
 			NET_INC_STATS_BH(sock_net(sk),
@@ -969,6 +986,9 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 
 		tp->ucopy.memory = 0;
 	} else if (skb_queue_len(&tp->ucopy.prequeue) == 1) {
+		/* 如果prequeue中只有这个skb，
+		 * 那就唤醒阻塞在读时间上的进程(sk_wait_data()中睡眠)
+		 */
 		wake_up_interruptible_poll(sk->sk_sleep,
 					   POLLIN | POLLRDNORM | POLLRDBAND);
 		if (!inet_csk_ack_scheduled(sk))

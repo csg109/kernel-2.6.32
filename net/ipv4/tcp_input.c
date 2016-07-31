@@ -224,6 +224,9 @@ static inline void TCP_ECN_queue_cwr(struct tcp_sock *tp)
 
 static inline void TCP_ECN_accept_cwr(struct tcp_sock *tp, struct sk_buff *skb)
 {
+	/* 如果对端TCP首部携带了CWR标志，说明对端已经收到了本端之前发出的ECE标志
+	 * 那么本端可以清除TCP_ECN_DEMAND_CWR标志，在接下来的包中不用携带ECE标志了
+	 */
 	if (tcp_hdr(skb)->cwr)
 		tp->ecn_flags &= ~TCP_ECN_DEMAND_CWR;
 }
@@ -4774,12 +4777,13 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	int eaten = -1;
 
+	/* 如果没有携带数据那么这个skb可以释放了 */
 	if (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq)
 		goto drop;
 
-	__skb_pull(skb, th->doff * 4);
+	__skb_pull(skb, th->doff * 4); /* 跳过TCP首部，data指向数据 */
 
-	TCP_ECN_accept_cwr(tp, skb);
+	TCP_ECN_accept_cwr(tp, skb); /* 检查CWR标志 */
 
 	tp->rx_opt.dsack = 0;
 
@@ -5502,21 +5506,30 @@ static int tcp_copy_to_iovec(struct sock *sk, struct sk_buff *skb, int hlen)
 	return err;
 }
 
+/* 返回0说明校验正确 */
 static __sum16 __tcp_checksum_complete_user(struct sock *sk,
 					    struct sk_buff *skb)
 {
 	__sum16 result;
 
 	if (sock_owned_by_user(sk)) {
+		/* 这里说明本次收包过程是在进程上下文中,
+		 * 比如进程release_sock()时触发的接收backlog队列
+		 * 或者tcp_prequeue_process()处理prequeue队列,
+		 * 所以这里可以在打开本地软中断时计算checksum，
+		 * 如果此时有软中断有数据包接收则新的数据包会被加入backlog队列
+		 */
 		local_bh_enable();
 		result = __tcp_checksum_complete(skb);
 		local_bh_disable();
 	} else {
+		/* 这里说明是在软中断上下文中进行的 */
 		result = __tcp_checksum_complete(skb);
 	}
 	return result;
 }
 
+/* 返回0说明校验正确 */
 static inline int tcp_checksum_complete_user(struct sock *sk,
 					     struct sk_buff *skb)
 {
@@ -5688,6 +5701,11 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	 *	PSH flag is ignored.
 	 */
 
+	/* 1.首部预测TCP头部第三个字节，如果首部长度、标志位(忽略保留位和PSH位)、接收窗口大小相同则预测成功
+	 * 2.序列号是下一个需要接收的
+	 * 3.ACK序号是正确的
+	 * 以上满足则进入快速路径
+	 */
 	if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
 	    TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&
 	    !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt)) {
@@ -5778,6 +5796,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 					tcp_cleanup_rbuf(sk, skb->len);
 			}
 			if (!eaten) {
+				/* 校验checksum */
 				if (tcp_checksum_complete_user(sk, skb))
 					goto csum_error;
 
@@ -5831,6 +5850,11 @@ no_ack:
 	}
 
 slow_path:
+	/* 校验checksum
+	 * 这里tcp_checksum_complete_user()是继续tcp_v4_rcv()中tcp_v4_checksum_init()中的计算
+	 * tcp_v4_checksum_init()对于还未检验完的会先将伪头累加到skb->csum中，
+	 * 然后tcp_checksum_complete_user()接着计算所有数据的累加，然后加上之前计算的伪头再取反得出checksum校验
+	 */
 	if (len < (th->doff << 2) || tcp_checksum_complete_user(sk, skb))
 		goto csum_error;
 
@@ -5852,7 +5876,7 @@ step5:
 	tcp_urg(sk, skb, th);
 
 	/* step 7: process the segment text */
-	tcp_data_queue(sk, skb);
+	tcp_data_queue(sk, skb); /* 处理接收数据 */
 
 	tcp_data_snd_check(sk); /* 检查是否需要发送数据，以及是否需要扩大发送缓存 */
 	tcp_ack_snd_check(sk);  /* 发送对数据的ACK */
