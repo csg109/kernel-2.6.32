@@ -308,10 +308,11 @@ struct sock {
 	__u32			sk_mark;
 	u32			sk_classid;
 	void			(*sk_state_change)(struct sock *sk);
+	/* tcp为sock_def_readable() */
 	void			(*sk_data_ready)(struct sock *sk, int bytes);
 	void			(*sk_write_space)(struct sock *sk);
 	void			(*sk_error_report)(struct sock *sk);
-	/* 用于接收sk->sk_backlog后备队列函数, tcp为tcp_v4_do_rcv  */
+	/* 用于接收sk->sk_backlog后备队列函数, tcp为tcp_v4_do_rcv() */
   	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);  
 	void                    (*sk_destruct)(struct sock *sk);
@@ -992,6 +993,7 @@ static inline int sk_mem_pages(int amt)
 	return (amt + SK_MEM_QUANTUM - 1) >> SK_MEM_QUANTUM_SHIFT;
 }
 
+/* 判断该协议是否有内存管理控制机制, 有则返回1 */
 static inline int sk_has_account(struct sock *sk)
 {
 	/* return true if protocol supports memory accounting */
@@ -1009,10 +1011,14 @@ static inline int sk_wmem_schedule(struct sock *sk, int size)
 		__sk_mem_schedule(sk, size, SK_MEM_SEND);
 }
 
+/* 检测协议可用内存是否足够, 足够返回1 */
 static inline int sk_rmem_schedule(struct sock *sk, int size)
 {
 	if (!sk_has_account(sk))
 		return 1;
+	/* 如果size小于预分配的内存则返回1表示允许
+	 * 否则增加预分配并判断TCP使用的总内存，允许则返回1
+	 */
 	return size <= sk->sk_forward_alloc ||
 		__sk_mem_schedule(sk, size, SK_MEM_RECV);
 }
@@ -1544,8 +1550,8 @@ static inline void skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
 	skb_orphan(skb);
 	skb->sk = sk;
 	skb->destructor = sock_rfree;
-	atomic_add(skb->truesize, &sk->sk_rmem_alloc);
-	sk_mem_charge(sk, skb->truesize);
+	atomic_add(skb->truesize, &sk->sk_rmem_alloc); /* 增加已用接收缓存 */
+	sk_mem_charge(sk, skb->truesize); /* 减少预分配缓存 */
 }
 
 extern void sk_reset_timer(struct sock *sk, struct timer_list* timer,

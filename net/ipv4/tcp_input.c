@@ -4478,7 +4478,7 @@ static void tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	inet_csk_schedule_ack(sk);
+	inet_csk_schedule_ack(sk); /* 设置需要回复ACK */
 
 	sk->sk_shutdown |= RCV_SHUTDOWN;
 	sock_set_flag(sk, SOCK_DONE);
@@ -4543,6 +4543,7 @@ static void tcp_fin(struct sk_buff *skb, struct sock *sk, struct tcphdr *th)
 	}
 }
 
+/* 扩展需要回复的SACK/D-SACK的范围,如果能扩展返回1 */
 static inline int tcp_sack_extend(struct tcp_sack_block *sp, u32 seq,
 				  u32 end_seq)
 {
@@ -4556,6 +4557,7 @@ static inline int tcp_sack_extend(struct tcp_sack_block *sp, u32 seq,
 	return 0;
 }
 
+/* 设置需要回复D-SACK以及范围 */
 static void tcp_dsack_set(struct sock *sk, u32 seq, u32 end_seq)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -4570,18 +4572,21 @@ static void tcp_dsack_set(struct sock *sk, u32 seq, u32 end_seq)
 
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
 
-		tp->rx_opt.dsack = 1;
+		tp->rx_opt.dsack = 1; /* 设置需要回复D-SACK */
 		tp->duplicate_sack[0].start_seq = seq;
 		tp->duplicate_sack[0].end_seq = end_seq;
 	}
 }
 
+/* 设置/扩展需要回复的D-SACK范围 */
 static void tcp_dsack_extend(struct sock *sk, u32 seq, u32 end_seq)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	/* 如果还未设置需要回复D-SACK则设置 */
 	if (!tp->rx_opt.dsack)
 		tcp_dsack_set(sk, seq, end_seq);
+	/* 已设置过就扩展范围 */
 	else
 		tcp_sack_extend(tp->duplicate_sack, seq, end_seq);
 }
@@ -4610,6 +4615,7 @@ static void tcp_send_dupack(struct sock *sk, struct sk_buff *skb)
 /* These routines update the SACK block as out-of-order packets arrive or
  * in-order packets close up the sequence space.
  */
+/* 在更新SACK段之后调用本函数尝试处理selective_acks的SACK段之间的合并 */
 static void tcp_sack_maybe_coalesce(struct tcp_sock *tp)
 {
 	int this_sack;
@@ -4635,6 +4641,7 @@ static void tcp_sack_maybe_coalesce(struct tcp_sock *tp)
 	}
 }
 
+/* 更新SACK段信息 */
 static void tcp_sack_new_ofo_skb(struct sock *sk, u32 seq, u32 end_seq)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -4642,14 +4649,21 @@ static void tcp_sack_new_ofo_skb(struct sock *sk, u32 seq, u32 end_seq)
 	int cur_sacks = tp->rx_opt.num_sacks;
 	int this_sack;
 
+	/* 如果当前没有SACK段,直接设置就可以了 */
 	if (!cur_sacks)
 		goto new_sack;
 
+	/* 循环当前的SACK段尝试扩展 */
 	for (this_sack = 0; this_sack < cur_sacks; this_sack++, sp++) {
+		/* 如果可以扩展更新SACK段,则会把最新更新的SACK段移动到最前面 */
 		if (tcp_sack_extend(sp, seq, end_seq)) {
 			/* Rotate this_sack to the first one. */
+			/* 将最新更新的SACK段移到最前面
+			 * 这里说明selective_acks是按照最近更新排序的
+			 */
 			for (; this_sack > 0; this_sack--, sp--)
 				swap(*sp, *(sp - 1));
+			/* 超过一个段时处理selective_acks的SACK段之间的合并*/
 			if (cur_sacks > 1)
 				tcp_sack_maybe_coalesce(tp);
 			return;
@@ -4662,15 +4676,23 @@ static void tcp_sack_new_ofo_skb(struct sock *sk, u32 seq, u32 end_seq)
 	 *
 	 * If the sack array is full, forget about the last one.
 	 */
+	/* 到这里说明不能跟之前SACK段合并,要新增一个SACK段 */
+
+	/* 超过4个段则先删除一个
+	 * 因为selective_acks是按照更新时间排序的,
+	 * 所以删除时直接抛弃最后一个(最旧的那个)
+	 */
 	if (this_sack >= TCP_NUM_SACKS) {
 		this_sack--;
 		tp->rx_opt.num_sacks--;
 		sp--;
 	}
+	/* 然后把每个SACK段往后移 */
 	for (; this_sack > 0; this_sack--, sp--)
 		*sp = *(sp - 1);
 
 new_sack:
+	/* 新增加一个SACK段,selective_acks[0]的位置 */
 	/* Build the new head SACK, and we're done. */
 	sp->start_seq = seq;
 	sp->end_seq = end_seq;
@@ -4678,7 +4700,7 @@ new_sack:
 }
 
 /* RCV.NXT advances, some SACKs should be eaten. */
-
+/* 当rcv_nxt被更新后需要删掉在rcv_nxt之前的sack段 */
 static void tcp_sack_remove(struct tcp_sock *tp)
 {
 	struct tcp_sack_block *sp = &tp->selective_acks[0];
@@ -4686,6 +4708,7 @@ static void tcp_sack_remove(struct tcp_sock *tp)
 	int this_sack;
 
 	/* Empty ofo queue, hence, all the SACKs are eaten. Clear. */
+	/* 如果乱序队列为空,说明不需要回复SACK段了 */
 	if (skb_queue_empty(&tp->out_of_order_queue)) {
 		tp->rx_opt.num_sacks = 0;
 		return;
@@ -4693,6 +4716,7 @@ static void tcp_sack_remove(struct tcp_sock *tp)
 
 	for (this_sack = 0; this_sack < num_sacks;) {
 		/* Check if the start of the sack is covered by RCV.NXT. */
+		/* 当sack段在rcv_nxt之前需要删除 */
 		if (!before(tp->rcv_nxt, sp->start_seq)) {
 			int i;
 
@@ -4714,16 +4738,18 @@ static void tcp_sack_remove(struct tcp_sock *tp)
 /* This one checks to see if we can put data from the
  * out_of_order queue into the receive_queue.
  */
-static void tcp_ofo_queue(struct sock *sk)
-{
+/* 尝试将乱序队列中顺序的数据包移到接收队列 */
+static void tcp_ofo_queue(struct sock *sk) {
 	struct tcp_sock *tp = tcp_sk(sk);
 	__u32 dsack_high = tp->rcv_nxt;
 	struct sk_buff *skb;
 
 	while ((skb = skb_peek(&tp->out_of_order_queue)) != NULL) {
+		/* 乱序就退出 */
 		if (after(TCP_SKB_CB(skb)->seq, tp->rcv_nxt))
 			break;
 
+		/* 检查是否回复D-SACK和D-SACK范围 */
 		if (before(TCP_SKB_CB(skb)->seq, dsack_high)) {
 			__u32 dsack = dsack_high;
 			if (before(TCP_SKB_CB(skb)->end_seq, dsack_high))
@@ -4731,6 +4757,7 @@ static void tcp_ofo_queue(struct sock *sk)
 			tcp_dsack_extend(sk, TCP_SKB_CB(skb)->seq, dsack);
 		}
 
+		/* 如果乱序的数据包已经被接收则直接从乱序队列删除 */
 		if (!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt)) {
 			SOCK_DEBUG(sk, "ofo packet was already received \n");
 			__skb_unlink(skb, &tp->out_of_order_queue);
@@ -4741,9 +4768,12 @@ static void tcp_ofo_queue(struct sock *sk)
 			   tp->rcv_nxt, TCP_SKB_CB(skb)->seq,
 			   TCP_SKB_CB(skb)->end_seq);
 
+		/* 将skb从乱序队列删除加入到接收队列 */
 		__skb_unlink(skb, &tp->out_of_order_queue);
 		__skb_queue_tail(&sk->sk_receive_queue, skb);
-		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq; /* 更新接收序号 */
+
+		/* 处理收到FIN */
 		if (tcp_hdr(skb)->fin)
 			tcp_fin(skb, sk, tcp_hdr(skb));
 	}
@@ -4771,6 +4801,7 @@ static inline int tcp_try_rmem_schedule(struct sock *sk, unsigned int size)
 	return 0;
 }
 
+/* 接收数据处理 */
 static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcphdr *th = tcp_hdr(skb);
@@ -4785,17 +4816,23 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
 	TCP_ECN_accept_cwr(tp, skb); /* 检查CWR标志 */
 
+	/* 先清空回复D-SACK标志,后面会检查如果需要再次设置 */
 	tp->rx_opt.dsack = 0;
 
 	/*  Queue data for delivery to the user.
 	 *  Packets in sequence go to the receive queue.
 	 *  Out of sequence packets to the out_of_order_queue.
 	 */
+	/* 这里处理顺序数据包,放入sk_receive_queue */
 	if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt) {
+		/* 如果本端0窗口了还接收到数据,则跳转到out_of_window处理 */
 		if (tcp_receive_window(tp) == 0)
 			goto out_of_window;
 
 		/* Ok. In sequence. In window. */
+		/* 这里说明是顺序并且在接收窗口内的数据包 */
+
+		/* task非空说明进程正在阻塞读,并且是由从prequeue队列触发的收包 */
 		if (tp->ucopy.task == current &&
 		    tp->copied_seq == tp->rcv_nxt && tp->ucopy.len &&
 		    sock_owned_by_user(sk) && !tp->urg_data) {
@@ -4805,32 +4842,36 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 			__set_current_state(TASK_RUNNING);
 
 			local_bh_enable();
+			/* 将skb数据拷贝给进程 */
 			if (!skb_copy_datagram_iovec(skb, 0, tp->ucopy.iov, chunk)) {
-				tp->ucopy.len -= chunk;
+				tp->ucopy.len -= chunk; /* 调整还需要读的大小 */
 				tp->copied_seq += chunk;
-				eaten = (chunk == skb->len);
-				tcp_rcv_space_adjust(sk);
+				eaten = (chunk == skb->len); /* eaten为1表示skb被完全接收了 */
+				tcp_rcv_space_adjust(sk); /* 读完数据后调整接收缓存 */
 			}
 			local_bh_disable();
 		}
 
+		/* eaten为1表示skb被完全接收了,为0表示被部分接收,-1表示没被接收 */
 		if (eaten <= 0) {
 queue_and_out:
+			/* 如果接收缓存满或TCP内存不足,则丢弃数据包 */
 			if (eaten < 0 &&
 			    tcp_try_rmem_schedule(sk, skb->truesize))
 				goto drop;
 
-			skb_set_owner_r(skb, sk);
-			__skb_queue_tail(&sk->sk_receive_queue, skb);
+			skb_set_owner_r(skb, sk); /* 设置与sk关联,增加已用接收缓存 */
+			__skb_queue_tail(&sk->sk_receive_queue, skb); /* 加入接收队列 */
 		}
-		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq; /* 更新接收序列号 */
 		if (skb->len)
 			tcp_event_data_recv(sk, skb); /* Delay-ack控制、接收端估算RTT、接收窗口阈值调整 */
 		if (th->fin)
-			tcp_fin(skb, sk, th);
+			tcp_fin(skb, sk, th); /* 处理收到FIN */
 
+		/* 如果乱序队列非空，则尝试将乱序队列中顺序的数据包移到接收队列 */
 		if (!skb_queue_empty(&tp->out_of_order_queue)) {
-			tcp_ofo_queue(sk);
+			tcp_ofo_queue(sk); /* 将乱序队列中顺序的数据包移到接收队列 */
 
 			/* RFC2581. 4.2. SHOULD send immediate ACK, when
 			 * gap in queue is filled.
@@ -4839,94 +4880,125 @@ queue_and_out:
 				inet_csk(sk)->icsk_ack.pingpong = 0;
 		}
 
+		/* 因为是顺序接收,rcv_nxt更新了
+		 * 这里需要删掉在rcv_nxt之前的sack段
+		 */
 		if (tp->rx_opt.num_sacks)
 			tcp_sack_remove(tp);
 
-		tcp_fast_path_check(sk);
+		tcp_fast_path_check(sk); /* 检查开启快速路径 */
 
 		if (eaten > 0)
 			__kfree_skb(skb);
+		/* 如果有进程睡眠在等待读则唤醒进程 */
 		else if (!sock_flag(sk, SOCK_DEAD))
-			sk->sk_data_ready(sk, 0);
+			sk->sk_data_ready(sk, 0); /* 调用sock_def_readable() */
 		return;
 	}
 
+	/* 如果整个数据包是重传之前的数据,则设置D-SACK */
 	if (!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt)) {
 		/* A retransmit, 2nd most common case.  Force an immediate ack. */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_DELAYEDACKLOST);
+		/* 设置回复D-SACK,范围为整个数据包 */
 		tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
 
 out_of_window:
-		tcp_enter_quickack_mode(sk);
-		inet_csk_schedule_ack(sk);
+		tcp_enter_quickack_mode(sk); /* 进入快速确认 */
+		inet_csk_schedule_ack(sk); /* 设置需要回复ACK */
 drop:
 		__kfree_skb(skb);
 		return;
 	}
 
 	/* Out of window. F.e. zero window probe. */
+	/* 数据超出接收窗口,回复ACK丢弃 */
 	if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt + tcp_receive_window(tp)))
 		goto out_of_window;
 
 	tcp_enter_quickack_mode(sk);
 
+	/* 如果数据包一半数据是重复的,一半是新的: seq < rcv_nxt < end_seq
+	 * 那么设置D-SACK范围后跳转到queue_and_out接收数据
+	 */
 	if (before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
 		/* Partial packet, seq < rcv_next < end_seq */
 		SOCK_DEBUG(sk, "partial packet: rcv_next %X seq %X - %X\n",
 			   tp->rcv_nxt, TCP_SKB_CB(skb)->seq,
 			   TCP_SKB_CB(skb)->end_seq);
 
+		/* 设置D-SAKC范围：[seq, rcv_nxt) */
 		tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, tp->rcv_nxt);
 
 		/* If window is closed, drop tail of packet. But after
 		 * remembering D-SACK for its head made in previous line.
 		 */
-		if (!tcp_receive_window(tp))
+		if (!tcp_receive_window(tp)) /* 本端是0窗口,回复ACK丢弃 */
 			goto out_of_window;
-		goto queue_and_out;
+		goto queue_and_out; /* 跳转处理接收数据 */
 	}
 
 	TCP_ECN_check_ce(tp, skb);
 
+	/* 
+	 * 到这里就是乱序了
+	 */
+
+	/* 判断接收缓存是否足够, 不足丢弃 */
 	if (tcp_try_rmem_schedule(sk, skb->truesize))
 		goto drop;
 
 	/* Disable header prediction. */
-	tp->pred_flags = 0;
-	inet_csk_schedule_ack(sk);
+	tp->pred_flags = 0; /* 乱序时关闭快速路径 */
+	inet_csk_schedule_ack(sk); /* 需要回复ACK */
 
 	SOCK_DEBUG(sk, "out of order segment: rcv_next %X seq %X - %X\n",
 		   tp->rcv_nxt, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
 
 	skb_set_owner_r(skb, sk);
 
+	/* 如果乱序队列为空,则设置一个SACK段信息,然后将skb加入乱序队列 */
 	if (!skb_peek(&tp->out_of_order_queue)) {
 		/* Initial out of order segment, build 1 SACK. */
+		/* 设置一个SACK段 */
 		if (tcp_is_sack(tp)) {
 			tp->rx_opt.num_sacks = 1;
 			tp->selective_acks[0].start_seq = TCP_SKB_CB(skb)->seq;
 			tp->selective_acks[0].end_seq =
 						TCP_SKB_CB(skb)->end_seq;
 		}
-		__skb_queue_head(&tp->out_of_order_queue, skb);
+		__skb_queue_head(&tp->out_of_order_queue, skb); /* 加入乱序队列 */
 	} else {
+	/* 如果乱序队列已经存在skb
+	 * 那么按照seq序列号排序插入打动乱序队列,
+	 * 并处理SACK段和D-SACK段的更新
+	 */
 		struct sk_buff *skb1 = skb_peek_tail(&tp->out_of_order_queue);
 		u32 seq = TCP_SKB_CB(skb)->seq;
 		u32 end_seq = TCP_SKB_CB(skb)->end_seq;
 
+		/* 如果刚好顺序接在最后一个skb之后 */
 		if (seq == TCP_SKB_CB(skb1)->end_seq) {
+			/* 插到乱序队列最后 */
 			__skb_queue_after(&tp->out_of_order_queue, skb1, skb);
 
+			/* 如果原来不存在SACK段或者不能直接扩展第一个SACK段,
+			 * 则调整到add_sack更新SACK段 
+			 */
 			if (!tp->rx_opt.num_sacks ||
 			    tp->selective_acks[0].end_seq != seq)
 				goto add_sack;
 
+			/* 否则, 直接改变第一个SACK段(最新的SACK段)的尾部即可 */
 			/* Common case: data arrive in order after hole. */
 			tp->selective_acks[0].end_seq = end_seq;
 			return;
 		}
 
 		/* Find place to insert this segment. */
+		/* 从乱序队列的最后一个skb往前遍历,找到插入点(skb1之后)
+		 * 说明乱序队列是顺序存储的
+		 */
 		while (1) {
 			if (!after(TCP_SKB_CB(skb1)->seq, seq))
 				break;
@@ -4938,13 +5010,20 @@ drop:
 		}
 
 		/* Do skb overlap to previous one? */
+		/* 如果跟skb1有重复的数据 */
 		if (skb1 && before(seq, TCP_SKB_CB(skb1)->end_seq)) {
+
+			/* 如果skb序列号在skb1之内,说明整个skb都是重复的
+			 * 那么设置D-SACK然后扔掉
+			 */
 			if (!after(end_seq, TCP_SKB_CB(skb1)->end_seq)) {
 				/* All the bits are present. Drop. */
 				__kfree_skb(skb);
 				tcp_dsack_set(sk, seq, end_seq);
 				goto add_sack;
 			}
+
+			/* 部分数据重复,设置D-SACK: [seq, skb1->end_seq) */
 			if (after(seq, TCP_SKB_CB(skb1)->seq)) {
 				/* Partial overlap. */
 				tcp_dsack_set(sk, seq,
@@ -4959,12 +5038,13 @@ drop:
 						skb1);
 			}
 		}
-		if (!skb1)
+		if (!skb1) /* 插入第一个 */
 			__skb_queue_head(&tp->out_of_order_queue, skb);
-		else
+		else /* 插入到skb1之后 */
 			__skb_queue_after(&tp->out_of_order_queue, skb1, skb);
 
 		/* And clean segments covered by new one as whole. */
+		/* 这里处理skb与之后的数据包数据重复的情况 */
 		while (!skb_queue_is_last(&tp->out_of_order_queue, skb)) {
 			skb1 = skb_queue_next(&tp->out_of_order_queue, skb);
 
@@ -4975,6 +5055,7 @@ drop:
 						 end_seq);
 				break;
 			}
+			/* 这里说明skb1整个重复,释放掉skb1并设置D-SACK */
 			__skb_unlink(skb1, &tp->out_of_order_queue);
 			tcp_dsack_extend(sk, TCP_SKB_CB(skb1)->seq,
 					 TCP_SKB_CB(skb1)->end_seq);
@@ -4982,6 +5063,7 @@ drop:
 		}
 
 add_sack:
+		/* 更新SACK段 */
 		if (tcp_is_sack(tp))
 			tcp_sack_new_ofo_skb(sk, seq, end_seq);
 	}

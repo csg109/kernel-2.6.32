@@ -417,6 +417,7 @@ struct sk_buff {
 					 * 发送时:
 					 *   当网卡不支持checksum计算, 应用层tcp_sendmsg()时
 					 *   由skb_copy_to_page()边拷贝边计算数据部分的checksum存放到csum中
+					 * TCP参考tcp_v4_send_check()
 					 */
 		struct { 		/* 仅用于发送时网卡支持checksum的情况 */
 			__u16	csum_start;  /* TCP首部相对head的偏移, 后续网卡计算checksum从这里开始计算数据包的checksum */

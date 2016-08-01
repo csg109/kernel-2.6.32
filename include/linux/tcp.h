@@ -225,6 +225,7 @@ struct tcp_options_received {
 				 * 后续用来判断该连接是否启用了时间戳
 				 */
 		dsack : 1,	/* D-SACK is scheduled			*/
+				/* 需要回复D-SACK */
 		wscale_ok : 1,	/* Wscale seen on SYN packet		*/
 				/* 开启了窗口扩大因子 */
 		sack_ok : 4,	/* SACK seen on SYN packet		*/
@@ -236,6 +237,7 @@ struct tcp_options_received {
 				/* 本端的wscale值 */
 /*	SACKs data	*/
 	u8	num_sacks;	/* Number of SACK blocks		*/
+				/* 需要回复的SACK段数, 具体段保存在tp->selective_acks中 */
 	u16	user_mss;  	/* mss requested by user in ioctl */
 				/* 用户设置的最大MSS */
 	u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
@@ -300,9 +302,9 @@ struct tcp_sock {
 		struct task_struct	*task; 		/* 不等于null，表示进程正在读数据
 							 * 由tcp_recvmsg设置
 							 */
-		struct iovec		*iov;
+		struct iovec		*iov;		/* 进程读取数据的地址结构 */
 		int			memory;		/* 表示prequeue队列中skb占用的缓存大小 */
-		int			len;
+		int			len;		/* 进程还需要读取的大小 */
 #ifdef CONFIG_NET_DMA
 		/* members for async copy */
 		struct dma_chan		*dma_chan;
@@ -399,9 +401,13 @@ struct tcp_sock {
 
 	/* SACKs data, these 2 need to be together (see tcp_build_and_update_options) */
 	struct tcp_sack_block duplicate_sack[1]; /* D-SACK block */
+						 /* 需要回复的D-SACK范围 */
 	struct tcp_sack_block selective_acks[4]; /* The SACKS themselves*/
-
-	struct tcp_sack_block recv_sack_cache[4]; /* 保存收到的SACK块，用于提高效率 */
+						 /* 需要回复的SACK段信息, 有效个数为tp->rx_opt.num_sacks 
+						  * SACK段是按照最近更新排序的,即最后更新的SACK段排在最前面,
+						  * 详细参考tcp_sack_new_ofo_skb()
+						  */
+	struct tcp_sack_block recv_sack_cache[4]; /* 保存收到对端的SACK块，用于提高效率 */
 
 	struct sk_buff *highest_sack;   /* highest skb with SACK received
 					 * (validity guaranteed only if
