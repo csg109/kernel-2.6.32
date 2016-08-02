@@ -16,7 +16,9 @@
 struct iovec
 {
 	void __user *iov_base;	/* BSD uses caddr_t (1003.1g requires void *) */
+				/* 读取时指向应用层提供的接下来要写入的起始地址 */
 	__kernel_size_t iov_len; /* Must be size_t (1003.1g) */
+				/* 读取时表示iov_base缓存剩余可写大小 */
 };
 
 /*

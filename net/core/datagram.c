@@ -287,6 +287,7 @@ EXPORT_SYMBOL(skb_kill_datagram);
  *
  *	Note: the iovec is modified during the copy.
  */
+/* 拷贝skb偏移为offset长度为len的数据到应用层(通过iovec结构) */
 int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 			    struct iovec *to, int len)
 {

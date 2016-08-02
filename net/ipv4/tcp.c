@@ -1273,6 +1273,7 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		tcp_send_ack(sk); /* 发送ACK给对端 */
 }
 
+/* 接收prequeue */
 static void tcp_prequeue_process(struct sock *sk)
 {
 	struct sk_buff *skb;
@@ -1392,42 +1393,56 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
  *	Probably, code can be easily improved even more.
  */
 
+/* 
+ * @len:为需要读取的总大小,即msg->msg_iov数组中iov_len之和 
+ * @nonblock: 0为阻塞读,1为非阻塞
+ */
 int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t len, int nonblock, int flags, int *addr_len)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	int copied = 0;
+	int copied = 0; 	/* 表示已经读取到应用层的大小 */
 	u32 peek_seq;
-	u32 *seq;
-	unsigned long used;
+	u32 *seq;		/* 指向tp->copied_seq */
+	unsigned long used;	/* 表示skb中可被读取到应用层的数据大小 */
 	int err;
 	int target;		/* Read at least this many bytes */
-	long timeo;
+				/* target为本次调用至少读取的长度 */
+	long timeo;		/* 阻塞超时时间 */
 	struct task_struct *user_recv = NULL;
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
 
-	lock_sock(sk);
+	lock_sock(sk); /* 设置sk->sk_lock.owned, 可能等待其他进程退出 */
 
 	TCP_CHECK_TIMER(sk);
 
 	err = -ENOTCONN;
-	if (sk->sk_state == TCP_LISTEN)
+	if (sk->sk_state == TCP_LISTEN) /* 监听的不能接收数据 */
 		goto out;
 
+	/* 获取读超时时间, 非阻塞为0 */
 	timeo = sock_rcvtimeo(sk, nonblock);
 
 	/* Urgent data needs to be handled specially. */
+	/* 如果使用了带外数据,则特殊处理 */
 	if (flags & MSG_OOB)
 		goto recv_urg;
 
-	seq = &tp->copied_seq;
+	seq = &tp->copied_seq; /* 下一个读取序列号 */
+
+	/* 如果使用了预读MSG_PEEK(即预先读取但是数据不从协议删除)
+	 * 则不能修改tp->copied_seq
+	 */ 
 	if (flags & MSG_PEEK) {
 		peek_seq = tp->copied_seq;
 		seq = &peek_seq;
 	}
 
+	/* 获取目标读取的字节数,至少需要读取target字节才能返回
+	 * MSG_WAITALL标志表示需要读取recv指定的len长度才能返回
+	 */
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
 
 #ifdef CONFIG_NET_DMA
@@ -1453,7 +1468,9 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 #endif
 
 	do {
-		u32 offset;
+		u32 offset; /* skb起始seq距离copied_seq的长度,
+			     * 即从skb偏移offset的位置开始读取数据
+			     */
 
 		/* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
 		if (tp->urg_data && tp->urg_seq == *seq) {
@@ -1467,22 +1484,30 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		/* Next get a buffer. */
 
+		/* 找到包含copied_seq的待接收的skb
+		 * 找到后则跳转到found_ok_skb处理
+		 */
 		skb_queue_walk(&sk->sk_receive_queue, skb) {
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
+			/* 如果要skb的seq在copied_seq之后,则出现了BUG */
 			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
 			     KERN_INFO "recvmsg bug: copied %X "
 				       "seq %X rcvnxt %X fl %X\n", *seq,
 				       TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				       flags))
 				break;
-
+			/* offset为skb的序列号与要下一个要接收序列号的距离 */
 			offset = *seq - TCP_SKB_CB(skb)->seq;
-			if (tcp_hdr(skb)->syn)
+			if (tcp_hdr(skb)->syn) /* 去掉SYN的序列号 */
 				offset--;
+			/* 如果offset小于skb->len, 说明skb包含有将要读取的数据
+			 * 即找到目标skb
+			 */
 			if (offset < skb->len)
 				goto found_ok_skb;
+			/* 如果是FIN包则跳转处理 */
 			if (tcp_hdr(skb)->fin)
 				goto found_fin_ok;
 			WARN(!(flags & MSG_PEEK), KERN_INFO "recvmsg bug 2: "
@@ -1493,9 +1518,16 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		/* Well, if we have backlog, try to process it now yet. */
 
+		/* 
+		 * 到这里说明receive queue里没有可接收的数据了
+		 * 以下可能要处理prequeue和backlog队列了
+		 */
+
+		/* 如果已读取的不小于最小需要读取的并且backlog队列为空,就可以退出了 */
 		if (copied >= target && !sk->sk_backlog.tail)
 			break;
 
+		/* 这个if-else用来判断一些不需要继续等待接收的乱七八糟的情况, 以便直接breck出去 */
 		if (copied) {
 			if (sk->sk_err ||
 			    sk->sk_state == TCP_CLOSE ||
@@ -1537,19 +1569,28 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
-		tcp_cleanup_rbuf(sk, copied);
+		tcp_cleanup_rbuf(sk, copied); /* 检查现在是否需要发送ACK */
 
+		/* 不开启tcp_low_latency的情况下
+		 *     (低延迟模式,默认不开启,开启后不使用prequeue,
+		 * 	这样TCP协议处理的延时较低,比如ACK回复较为及时,
+		 * 	因为tcp_v4_rcv收到数据时不进入prequeue然后在唤醒应用层后才处理)
+		 *
+		 * 并且sock未设置等待处理的进程或已经设置并且是本进程,
+		 * 则进入处理prequeue
+		 */
 		if (!sysctl_tcp_low_latency && tp->ucopy.task == user_recv) {
 			/* Install new reader */
-			/* 设置正在读的进程为current */
+			/* 设置正在读的进程为current, 以便prequeue处理接收 */
 			if (!user_recv && !(flags & (MSG_TRUNC | MSG_PEEK))) {
 				user_recv = current;
 				tp->ucopy.task = user_recv;
 				tp->ucopy.iov = msg->msg_iov;
 			}
 
-			tp->ucopy.len = len;
+			tp->ucopy.len = len; /* 设置还需要读取的大小 */
 
+			/* 这个警告说明这里receive queue必须为空 */
 			WARN_ON(tp->copied_seq != tp->rcv_nxt &&
 				!(flags & (MSG_PEEK | MSG_TRUNC)));
 
@@ -1579,49 +1620,97 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			 * is not empty. It is more elegant, but eats cycles,
 			 * unfortunately.
 			 */
+
+			/* 以上这段注释解释的很清楚了, 大意是：
+			 * 我们有4个队列(确切的说是3个队列和链路上的数据):
+			 * 1. packets in flight
+			 * 2. backlog
+			 * 3. prequeue
+			 * 4. receive_queue
+			 * 为了确保不会因为这几个队列导致数据包的人为乱序,
+			 * 需要确保处理严格按照数据包到达的顺序.
+			 * 所以以上4个队列的处理需要满足在其下一个队列的数据包未处理完前不能处理.
+			 *
+			 * 而现在这个地方是4.receive_queue为空,
+			 * 所以需要先处理3.prequeue,因为以下可能调用release_sock()来处理2.backlog
+			 */
+
+			/* 如果prequeue非空,则先处理prequeue */
 			if (!skb_queue_empty(&tp->ucopy.prequeue))
 				goto do_prequeue;
 
 			/* __ Set realtime policy in scheduler __ */
 		}
 
+		/* 
+		 * 到达这里说明recrive queue和prequeue都处理完为空了 
+		 * 可以处理backlog了
+		 */
+
+		/* 已经拷贝的满足最小需要读取的,
+		 * 那么不需要睡眠了, 仅仅调用release_sock()来处理backlog
+		 */
 		if (copied >= target) {
 			/* Do not sleep, just process backlog. */
-			release_sock(sk);
-			lock_sock(sk);
+			release_sock(sk); /* 目的是为了处理backlog */
+			lock_sock(sk);	/* 马上又hold住sock */
 		} else
+			/* 这里可能就需要睡眠等待了, timeo为等待超时时间
+			 * sk_wait_data里会接收backlog,如果有数据则不会睡眠直接返回
+			 * 否则等待过程中prequeue收到新数据则唤醒返回
+			 */
 			sk_wait_data(sk, &timeo);
 
 #ifdef CONFIG_NET_DMA
 		tp->ucopy.wakeup = 0;
 #endif
 
+		/* 如果sock有设置过进程读等待关联 */
 		if (user_recv) {
 			int chunk;
 
 			/* __ Restore normal policy in scheduler __ */
 
+			/* 因为上面可能在处理backlog时进程接收过数据,
+			 * 所以这里需要调整下剩余需要读的和已经读的大小 
+			 */
 			if ((chunk = len - tp->ucopy.len) != 0) {
 				NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMBACKLOG, chunk);
 				len -= chunk;
 				copied += chunk;
 			}
 
-			/* 如果接收队列sk_receive_queue中已经没有数据可读且prequeue有数据包，
+			/* 如果receive queue中已经没有数据可读且prequeue有数据包，
 			 * 那么处理prequeue队列接收数据包
+			 * 这里需要再次判断receive queue是否为空是因为前面处理了backlog, 
+			 * 数据包可能从backlog转移到了receive queue,
+			 * 那么就要优先处理receive queue
 			 */
 			if (tp->rcv_nxt == tp->copied_seq &&
 			    !skb_queue_empty(&tp->ucopy.prequeue)) {
 do_prequeue:
 				tcp_prequeue_process(sk); /* 接收prequeue的数据包 */
 
+				/* 因为上面处理prequeue时可能以下通过函数调用关系:
+				 * 	tcp_prequeue_process 
+				 * 	  => tcp_v4_do_rcv 
+				 * 	    => tcp_rcv_established 
+				 * 	      => tcp_data_queue 
+				 * 	        => skb_copy_datagram_iovec
+				 * 返回这里时prequeue已经处理过了, 
+				 * tp->ucopu.len在处理prequeue之前等于len, 而现在已经更新成还需要接收的大小,
+				 * 所以,len - tp->ucopy.len 即表示在prequeue中处理接收的大小
+				 */
 				if ((chunk = len - tp->ucopy.len) != 0) {
 					NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMPREQUEUE, chunk);
+					/* 调整prequeue中处理接收的长度 */
 					len -= chunk;
 					copied += chunk;
 				}
 			}
 		}
+
+		/* 检查预读的情况下序列号出错 */
 		if ((flags & MSG_PEEK) &&
 		    (peek_seq - copied - urg_hole != tp->copied_seq)) {
 			if (net_ratelimit())
@@ -1629,12 +1718,14 @@ do_prequeue:
 				       current->comm, task_pid_nr(current));
 			peek_seq = tp->copied_seq;
 		}
-		continue;
+		continue; /* 这里处理了prequeue或者backlog, 从receive queue开始再继续尝试接收数据 */
 
 	found_ok_skb:
+		/* 这里找到了将要接收的skb */
+
 		/* Ok so how much can we use? */
-		used = skb->len - offset;
-		if (len < used)
+		used = skb->len - offset; /* used为该skb中能被接收的有效数据长度 */
+		if (len < used) /* 如果大于应用层需要的则减少 */
 			used = len;
 
 		/* Do we have urgent data here? */
@@ -1655,6 +1746,10 @@ do_prequeue:
 			}
 		}
 
+		/* 这里处理拷贝数据到应用层,
+		 * 如果含有MSG_TRUNC标志则不需要进行拷贝操作
+		 * (MSG_TRUNC表示应用层不需要具体数据,相当于这部分数据从协议栈直接清除)
+		 */
 		if (!(flags & MSG_TRUNC)) {
 #ifdef CONFIG_NET_DMA
 			if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
@@ -1681,9 +1776,10 @@ do_prequeue:
 			} else
 #endif
 			{
+				/* 从skb中偏移offset的位置开始拷贝used字节到应用层 */
 				err = skb_copy_datagram_iovec(skb, offset,
 						msg->msg_iov, used);
-				if (err) {
+				if (err) { /* 拷贝出错 */
 					/* Exception. Bailout! */
 					if (!copied)
 						copied = -EFAULT;
@@ -1692,29 +1788,37 @@ do_prequeue:
 			}
 		}
 
-		*seq += used;
-		copied += used;
-		len -= used;
+		*seq += used;	/* 读取后增加copied_seq, 预读的情况不修改copied_seq(seq指向临时变量) */
+		copied += used;	/* 增加已经读取的长度 */
+		len -= used;	/* 减小还需要读取的长度 */
 
-		tcp_rcv_space_adjust(sk);
+		tcp_rcv_space_adjust(sk); /* 调整接收缓存 */
 
 skip_copy:
 		if (tp->urg_data && after(tp->copied_seq, tp->urg_seq)) {
 			tp->urg_data = 0;
 			tcp_fast_path_check(sk);
 		}
+		/* 满足条件说明skb还存在未读取的数据 */
 		if (used + offset < skb->len)
 			continue;
 
+		/* 到这里说明该skb的数据都被读取了 */
+
+		/* 如果是FIN包则处理 */
 		if (tcp_hdr(skb)->fin)
 			goto found_fin_ok;
+		/* 如果不是预读，则将skb从接收队列删除并释放skb */
 		if (!(flags & MSG_PEEK)) {
 			sk_eat_skb(sk, skb, copied_early);
 			copied_early = 0;
 		}
-		continue;
+		continue; /* 继续处理 */
 
 	found_fin_ok:
+		/* 这里处理FIN, 如果非预读则skb可以删除并释放了,
+		 * 同时break退出
+		 */
 		/* Process the FIN. */
 		++*seq;
 		if (!(flags & MSG_PEEK)) {
@@ -1722,9 +1826,14 @@ skip_copy:
 			copied_early = 0;
 		}
 		break;
-	} while (len > 0);
+	} while (len > 0); /* len为应用层缓存还能接收的大小, 还有空间则继续处理 */
 
+	/* 到达这里说明数据已经读取完,
+	 * 如果上面sock有设置过进程读等待关联, 那么这里需要去掉关联了
+	 * 去掉关联前还是需要先处理prequeue队列
+	 */
 	if (user_recv) {
+		/* 先处理下prequeue队列 */
 		if (!skb_queue_empty(&tp->ucopy.prequeue)) {
 			int chunk;
 
@@ -1739,6 +1848,7 @@ skip_copy:
 			}
 		}
 
+		/* 去掉sock和进程的读关联 */
 		tp->ucopy.task = NULL;
 		tp->ucopy.len = 0;
 	}
@@ -1776,11 +1886,11 @@ skip_copy:
 	 */
 
 	/* Clean up data we have read: This will do ACK frames. */
-	tcp_cleanup_rbuf(sk, copied);
+	tcp_cleanup_rbuf(sk, copied); /* 检查现在是否需要发送ACK */
 
 	TCP_CHECK_TIMER(sk);
-	release_sock(sk);
-	return copied;
+	release_sock(sk); /* 退出sock的持有,同时会处理接收backlog队列并唤醒等待sock的进程 */
+	return copied; /* 返回读取的大小 */
 
 out:
 	TCP_CHECK_TIMER(sk);

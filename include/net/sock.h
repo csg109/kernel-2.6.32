@@ -276,7 +276,11 @@ struct sock {
 	int			sk_route_caps;
 	int			sk_gso_type;
 	unsigned int		sk_gso_max_size;
-	int			sk_rcvlowat;
+	int			sk_rcvlowat;		/* 应用层读取时需要等待sk_rcvlowat的大小或者recv指定的字节数才返回
+							 * 默认为1, 即有读取到数据就能返回
+							 * 详细参考sock_rcvlowat()
+							 * 应用层可通过SO_RCVLOWAT选项设置大小
+							 */
 	unsigned long 		sk_flags;
 	unsigned long	        sk_lingertime;		/* 用于SOCK_LINGER, 表示等待的时间, 单位是jiffies */
 	struct sk_buff_head	sk_error_queue;
@@ -289,7 +293,9 @@ struct sock {
 	unsigned short		sk_max_ack_backlog;	/* sk_max_ack_backlog是sk_ack_backlog最大值，就是listen()的参数 */
 	__u32			sk_priority;
 	struct ucred		sk_peercred;
-	long			sk_rcvtimeo;
+	long			sk_rcvtimeo;		/* 读等待超时时间, 默认为MAX_SCHEDULE_TIMEOUT
+							 * 应用层可通过SO_RCVTIMEO选项设置
+							 */
 	long			sk_sndtimeo;
 	struct sk_filter      	*sk_filter;
 	void			*sk_protinfo;
@@ -685,7 +691,7 @@ static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *s
 	return 0;
 }
 
-/* 接收后备队列中的数据包 */
+/* 接收backlog或prequeue中的数据包 */
 static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	return sk->sk_backlog_rcv(sk, skb); /* tcp实际调用tcp_v4_do_rcv */

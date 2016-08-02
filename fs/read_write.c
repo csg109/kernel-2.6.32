@@ -264,7 +264,10 @@ ssize_t do_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *pp
 	kiocb.ki_left = len;
 
 	for (;;) {
-		/* 委托给异步读取操作,generic_file_aio_read */
+		/* 委托给异步读取操作,
+		 * 文件一般为generic_file_aio_read()
+		 * socket为sock_aio_read()
+		 */
 		ret = filp->f_op->aio_read(&kiocb, &iov, 1, kiocb.ki_pos); 
 		if (ret != -EIOCBRETRY)
 			break;
@@ -293,7 +296,9 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret >= 0) {
 		count = ret;
-		if (file->f_op->read) 	/* 存在file_operations->read则调用 */
+		if (file->f_op->read) 	/* 存在file_operations->read则调用
+					 * socket的file_operations对应socket_file_ops,无read函数
+					 */
 			ret = file->f_op->read(file, buf, count, pos);
 		else 			/* 否则调用一般的辅助函数 */
 			ret = do_sync_read(file, buf, count, pos);

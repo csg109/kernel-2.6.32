@@ -711,7 +711,7 @@ static inline int __sock_recvmsg_nosec(struct kiocb *iocb, struct socket *sock,
 	si->size = size;
 	si->flags = flags;
 
-	return sock->ops->recvmsg(iocb, sock, msg, size, flags);
+	return sock->ops->recvmsg(iocb, sock, msg, size, flags); /* TCPµ÷ÓÃinet_recvmsg() */
 }
 
 static inline int __sock_recvmsg(struct kiocb *iocb, struct socket *sock,
