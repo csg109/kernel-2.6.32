@@ -77,12 +77,14 @@ int verify_iovec(struct msghdr *m, struct iovec *iov, struct sockaddr *address, 
  *
  *	Note: this modifies the original iovec.
  */
-
+/* 从kdata拷贝len长度到iov中 */
 int memcpy_toiovec(struct iovec *iov, unsigned char *kdata, int len)
 {
+	/* 拷贝len长度的数据到iov数组中 */
 	while (len > 0) {
 		if (iov->iov_len) {
 			int copy = min_t(unsigned int, iov->iov_len, len);
+			/* 拷贝copy字节到iov */
 			if (copy_to_user(iov->iov_base, kdata, copy))
 				return -EFAULT;
 			kdata += copy;

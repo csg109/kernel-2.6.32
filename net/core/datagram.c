@@ -291,23 +291,26 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 			    struct iovec *to, int len)
 {
 	int start = skb_headlen(skb);
-	int i, copy = start - offset;
+	int i, copy = start - offset; /* copy初始化为线性区能拷贝的大小 */
 	struct sk_buff *frag_iter;
 
 	trace_skb_copy_datagram_iovec(skb, len);
 
 	/* Copy header. */
+	/* 拷贝线性区 */
 	if (copy > 0) {
 		if (copy > len)
 			copy = len;
+		/* 从线性区拷贝copy字节到iovec */
 		if (memcpy_toiovec(to, skb->data + offset, copy))
 			goto fault;
-		if ((len -= copy) == 0)
+		if ((len -= copy) == 0) /* 数据足够了就返回 */
 			return 0;
 		offset += copy;
 	}
 
 	/* Copy paged appendix. Hmm... why does this look so complicated? */
+	/* 拷贝分页 */
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		int end;
 
@@ -335,6 +338,7 @@ int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 		start = end;
 	}
 
+	/* 递归拷贝分段 */
 	skb_walk_frags(skb, frag_iter) {
 		int end;
 

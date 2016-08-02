@@ -61,7 +61,9 @@ struct msghdr {
 	void	*	msg_name;	/* Socket name			*/
 	int		msg_namelen;	/* Length of name		*/
 	struct iovec *	msg_iov;	/* Data blocks			*/
+					/* 存储数据的数组 */
 	__kernel_size_t	msg_iovlen;	/* Number of blocks		*/
+					/* msg_iov的数组长度 */
 	void 	*	msg_control;	/* Per protocol magic (eg BSD file descriptor passing) */
 	__kernel_size_t	msg_controllen;	/* Length of cmsg list */
 	unsigned	msg_flags;

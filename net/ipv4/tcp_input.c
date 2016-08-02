@@ -4841,8 +4841,11 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
 			__set_current_state(TASK_RUNNING);
 
+			/* 这里可以在开软中断下拷贝,因为sock被进程持有
+			 * 这时如果软中断收到数据包则会加入backlog队列
+			 */
 			local_bh_enable();
-			/* 将skb数据拷贝给进程 */
+			/* 将skb数据拷贝到iovec */
 			if (!skb_copy_datagram_iovec(skb, 0, tp->ucopy.iov, chunk)) {
 				tp->ucopy.len -= chunk; /* 调整还需要读的大小 */
 				tp->copied_seq += chunk;
@@ -4970,7 +4973,7 @@ drop:
 		__skb_queue_head(&tp->out_of_order_queue, skb); /* 加入乱序队列 */
 	} else {
 	/* 如果乱序队列已经存在skb
-	 * 那么按照seq序列号排序插入打动乱序队列,
+	 * 那么按照seq序列号排序插入乱序队列,
 	 * 并处理SACK段和D-SACK段的更新
 	 */
 		struct sk_buff *skb1 = skb_peek_tail(&tp->out_of_order_queue);
