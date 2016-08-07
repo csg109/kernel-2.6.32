@@ -1453,12 +1453,23 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		int available = 0;
 
 		if (skb)
+			/* available为receive queue可读取的字节数 */
 			available = TCP_SKB_CB(skb)->seq + skb->len - (*seq);
+		/*
+		 * tp->ucopy.pinned_list 指向DMA需要的dma_pinned_list结构,如果为空则表示不使用DMA拷贝
+		 * 使用DMA与否就由这里来控制,当以下条件满足时才使用DMA：
+		 *  1. receive queue中的数据小于最小需要的
+		 *  2. 应用层提供的缓存大小大于tcp_dma_copybreak,默认为4k
+		 *  3. 非预读MSG_PEEK模式
+		 *  4. tcp_low_latency低延迟模式关闭
+		 *  5. 找到dma channel
+		 */
 		if ((available < target) &&
 		    (len > sysctl_tcp_dma_copybreak) && !(flags & MSG_PEEK) &&
 		    !sysctl_tcp_low_latency &&
 		    dma_find_channel(DMA_MEMCPY)) {
 			preempt_enable_no_resched();
+			/* 分配一个dma_pinned_list并根据iovec数组初始化 */
 			tp->ucopy.pinned_list =
 					dma_pin_iovec_pages(msg->msg_iov, len);
 		} else {
@@ -1523,7 +1534,9 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		 * 以下可能要处理prequeue和backlog队列了
 		 */
 
-		/* 如果已读取的不小于最小需要读取的并且backlog队列为空,就可以退出了 */
+		/* 如果已读取的不小于最小需要读取的并且backlog队列为空,就可以退出了 
+		 * 因为如果backlog有数据包的话虽然已经可以返回但还是可以继续读到更多数据的
+		 */
 		if (copied >= target && !sk->sk_backlog.tail)
 			break;
 
@@ -1752,9 +1765,15 @@ do_prequeue:
 		 */
 		if (!(flags & MSG_TRUNC)) {
 #ifdef CONFIG_NET_DMA
+			/* 如果使用DMA则获取dma channel */
 			if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
 				tp->ucopy.dma_chan = dma_find_channel(DMA_MEMCPY);
 
+			/* 获取dma channel之后, 使用DMA拷贝数据,
+			 * dma_skb_copy_datagram_iovec()将skb需要拷贝的数据映射到iovec中,
+			 * 但是拷贝是异步的,返回后仅是通知DMA操作,并不意味着拷贝完成
+			 * 等到之后调用dma_async_memcpy_complete()来等待DMA拷贝完成
+			 */
 			if (tp->ucopy.dma_chan) {
 				tp->ucopy.dma_cookie = dma_skb_copy_datagram_iovec(
 					tp->ucopy.dma_chan, skb, offset,
@@ -1770,6 +1789,12 @@ do_prequeue:
 						copied = -EFAULT;
 					break;
 				}
+				/* 如果整个skb的数据都被读取了,设置copied_early为1
+				 * 原因是如果是正常同步读取的话当整个skb的数据都被读取之后以下sk_eat_skb()就可以将skb释放了
+				 * 但是这里因为DMA是异步读取,所以skb还不能释放,
+				 * 将copied_early置1以便sk_eat_skb()中先将skb加入sk->sk_async_wait_queue队列,
+				 * 然后等DMA拷贝完成再从队列中删除
+				 */
 				if ((offset + used) == skb->len)
 					copied_early = 1;
 
@@ -1859,10 +1884,12 @@ skip_copy:
 
 		dma_async_memcpy_issue_pending(tp->ucopy.dma_chan);
 
+		/* 循环等待DMA拷贝完成 */
 		while (dma_async_memcpy_complete(tp->ucopy.dma_chan,
 						 tp->ucopy.dma_cookie, &done,
 						 &used) == DMA_IN_PROGRESS) {
 			/* do partial cleanup of sk_async_wait_queue */
+			/* 先清除已完成部分的skb */
 			while ((skb = skb_peek(&sk->sk_async_wait_queue)) &&
 			       (dma_async_is_complete(skb->dma_cookie, done,
 						      used) == DMA_SUCCESS)) {
@@ -1872,9 +1899,11 @@ skip_copy:
 		}
 
 		/* Safe to free early-copied skbs now */
+		/* 到这里DMA拷贝完成,清空sk_async_wait_queue队列 */
 		__skb_queue_purge(&sk->sk_async_wait_queue);
-		tp->ucopy.dma_chan = NULL;
+		tp->ucopy.dma_chan = NULL; /* dma channel清零 */
 	}
+	/* 释放掉之前申请的dma_pinned_list */
 	if (tp->ucopy.pinned_list) {
 		dma_unpin_iovec_pages(tp->ucopy.pinned_list);
 		tp->ucopy.pinned_list = NULL;

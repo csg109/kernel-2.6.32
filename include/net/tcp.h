@@ -958,12 +958,22 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	/* tp->ucopy.task不等于null，表示进程正在读取数据，
+	/* 如果使用了tcp_low_latency低延迟模式,那么不使用prequeue直接在软中断中接收
+	 * 或者
+	 * tp->ucopy.task为空,说明没有进程在睡眠等待读,也直接接收
+	 *
+	 * tp->ucopy.task不等于null，表示进程正在读取数据，
 	 * 而进入函数的条件又是进程没有锁住(sk->sk_lock.owned ==0),
-	 * 出现这种现象的唯一情况就是进程没有读够想要的数据，休眠了
+	 * 出现这种现象的唯一情况就是进程没有读够想要的数据，
+	 * 在tcp_recvmsg的sk_wait_data上睡眠了
 	 */
 	if (sysctl_tcp_low_latency || !tp->ucopy.task)
 		return 0;
+	
+	/* 到这里说明有进程正在睡眠等待接收数据,
+	 * 那么软中断这里先把skb加入prequeue队列然后唤醒进程,
+	 * 在进程中来处理接收
+	 */
 
 	/* 先将skb加入prequeue队列 */
 	__skb_queue_tail(&tp->ucopy.prequeue, skb);
@@ -986,8 +996,8 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 
 		tp->ucopy.memory = 0;
 	} else if (skb_queue_len(&tp->ucopy.prequeue) == 1) {
-		/* 如果prequeue中只有这个skb，
-		 * 那就唤醒阻塞在读时间上的进程(sk_wait_data()中睡眠)
+		/* 如果是prequeue中的第一个数据包
+		 * 那就唤醒阻塞在读事件上的进程(sk_wait_data()中睡眠)
 		 */
 		wake_up_interruptible_poll(sk->sk_sleep,
 					   POLLIN | POLLRDNORM | POLLRDBAND);
@@ -1113,6 +1123,7 @@ static inline int tcp_fin_time(const struct sock *sk)
 	return fin_timeout;
 }
 
+/* PAWS检测,成功返回1 */
 static inline int tcp_paws_check(const struct tcp_options_received *rx_opt,
 				 int paws_win)
 {

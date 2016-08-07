@@ -272,13 +272,14 @@ static inline void ip_select_ident(struct iphdr *iph, struct dst_entry *dst, str
 
 static inline void ip_select_ident_more(struct iphdr *iph, struct dst_entry *dst, struct sock *sk, int more)
 {
+	/* 如果有DF标志,则使用inet_sock中的ipid, 即按照连接记录ipid */
 	if (iph->frag_off & htons(IP_DF)) {
 		if (sk && inet_sk(sk)->daddr) {
 			iph->id = htons(inet_sk(sk)->id);
 			inet_sk(sk)->id += 1 + more;
 		} else
 			iph->id = 0;
-	} else
+	} else /* 否则从路由表中peer中取出ipid，即按照端来记录ipid */
 		__ip_select_ident(iph, dst, more);
 }
 

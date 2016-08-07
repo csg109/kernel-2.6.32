@@ -611,15 +611,19 @@ void dma_release_channel(struct dma_chan *chan);
 
 /* --- Helper iov-locking functions --- */
 
-struct dma_page_list {
-	char __user *base_address;
-	int nr_pages;
-	struct page **pages;
+struct dma_page_list { /* 代表一个缓存区,由一个iovec转化得到 */
+	char __user *base_address; 	/* 指向iovec的iov_base */
+	int nr_pages; 			/* 包含nr_pages个页 */
+	struct page **pages; 		/* 指向存放页指针的首地址, 
+					 * 顺序下去有nr_pages个页
+					 */
 };
 
 struct dma_pinned_list {
-	int nr_iovecs;
-	struct dma_page_list page_list[0];
+	int nr_iovecs; 			   /* page_list的个数 */
+	struct dma_page_list page_list[0]; /* 指向nr_iovecs个dma_page_list, 
+					    * 每个由一个iovec结构转化而来
+					    */
 };
 
 struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len);

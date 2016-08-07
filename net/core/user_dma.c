@@ -55,6 +55,7 @@ int dma_skb_copy_datagram_iovec(struct dma_chan *chan,
 	dma_cookie_t cookie = 0;
 
 	/* Copy header. */
+	/* ¿½±´ÏßÐÔÇø */
 	if (copy > 0) {
 		if (copy > len)
 			copy = len;

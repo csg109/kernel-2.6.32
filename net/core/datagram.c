@@ -287,7 +287,9 @@ EXPORT_SYMBOL(skb_kill_datagram);
  *
  *	Note: the iovec is modified during the copy.
  */
-/* 拷贝skb偏移为offset长度为len的数据到应用层(通过iovec结构) */
+/* 拷贝skb偏移为offset长度为len的数据到应用层(通过iovec结构) 
+ * 返回0说明拷贝成功
+ */
 int skb_copy_datagram_iovec(const struct sk_buff *skb, int offset,
 			    struct iovec *to, int len)
 {
@@ -548,6 +550,7 @@ fault:
 }
 EXPORT_SYMBOL(skb_copy_datagram_from_iovec);
 
+/* 边拷贝skb数据边计算数据的checksum累加在csump参数 */
 static int skb_copy_and_csum_datagram(const struct sk_buff *skb, int offset,
 				      u8 __user *to, int len,
 				      __wsum *csump)
@@ -682,11 +685,14 @@ EXPORT_SYMBOL(__skb_checksum_complete);
  *		 -EFAULT - fault during copy. Beware, in this case iovec
  *			   can be modified!
  */
+/* 校验checksum并将skb的数据拷贝到iovec
+ * 调用前需要确认iovec能装下整个skb的数据
+ */
 int skb_copy_and_csum_datagram_iovec(struct sk_buff *skb,
 				     int hlen, struct iovec *iov)
 {
 	__wsum csum;
-	int chunk = skb->len - hlen;
+	int chunk = skb->len - hlen; /* 数据长度 */
 
 	if (!chunk)
 		return 0;
@@ -694,27 +700,49 @@ int skb_copy_and_csum_datagram_iovec(struct sk_buff *skb,
 	/* Skip filled elements.
 	 * Pretty silly, look at memcpy_toiovec, though 8)
 	 */
-	while (!iov->iov_len)
+	while (!iov->iov_len) /* 找到有空间写的iovec */
 		iov++;
 
+	/* 如果skb的数据需要被放在多个iov里(因为第一个iov放不下skb的所有数据)
+	 * 那么先校验整个skb的checksum, 校验成功后再进行拷贝操作
+	 *
+	 * 这么做校验和拷贝是分开处理,效率较低, 这么做的原因是因为需要对多个iov拷贝数据,
+	 * 如果校验和拷贝同时处理当拷贝多个iov后发现校验错误,
+	 * 那么这时已经拷贝的iov的iov_len已经改变,就不好撤销操作了
+	 */
 	if (iov->iov_len < chunk) {
-		if (__skb_checksum_complete(skb))
+		if (__skb_checksum_complete(skb)) /* 先校验chekcsum */
 			goto csum_error;
+		/* checksum校验正确后进行拷贝操作 */
 		if (skb_copy_datagram_iovec(skb, hlen, iov, chunk))
 			goto fault;
 	} else {
+	/* 当skb的数据能放在一个iov里时,就可以边拷贝边校验checksum了,效率较高
+	 * 值得注意的是:
+	 * 	这种情况如果checksum出错,那么应用层的缓存空间是会被修改写入checksum出错的数据的
+	 * 	只是返回的是EINVAL
+	 */
+		/* 计算TCP首部并累加伪头(skb->csum保存了之前计算好的伪头) */
 		csum = csum_partial(skb->data, hlen, skb->csum);
+		/* 这里边拷贝数据边累加数据的checksu到csum中,
+		 * 返回后仅说明拷贝正常,还需要验证checksum是否正确
+		 */
 		if (skb_copy_and_csum_datagram(skb, hlen, iov->iov_base,
 					       chunk, &csum))
 			goto fault;
+		/* 对32位的checksum按16位累加并取反,得到最终checksum,
+		 * 如果非0则校验出错
+		 */
 		if (csum_fold(csum))
 			goto csum_error;
+		/* 能到这里说明ip_summed应该为CHECKSUM_NONE, 如果为CHECKSUM_COMPLETE则出错 */
 		if (unlikely(skb->ip_summed == CHECKSUM_COMPLETE))
 			netdev_rx_csum_fault(skb->dev);
+		/* 校验并拷贝正常后调整iov字段 */
 		iov->iov_len -= chunk;
 		iov->iov_base += chunk;
 	}
-	return 0;
+	return 0; /* checksum校验正确并拷贝完成 */
 csum_error:
 	return -EINVAL;
 fault:

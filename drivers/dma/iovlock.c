@@ -46,28 +46,37 @@ static int num_pages_spanned(struct iovec *iov)
  * 3 sections, the latter 2 whose size depends on the number of iovecs and the
  * total number of pages, respectively.
  */
+/* 申请并初始化dma_pinned_list, 
+ * 将dma_pinned_list与应用层缓存建立对应
+ */
 struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len)
 {
 	struct dma_pinned_list *local_list;
 	struct page **pages;
 	int i;
 	int ret;
-	int nr_iovecs = 0;
-	int iovec_len_used = 0;
-	int iovec_pages_used = 0;
+	int nr_iovecs = 0;	  /* iovec数组大小 */
+	int iovec_len_used = 0;   /* iovec数组缓存大小 */
+	int iovec_pages_used = 0; /* iovec数组使用的页数 */
 
 	/* don't pin down non-user-based iovecs */
 	if (segment_eq(get_fs(), KERNEL_DS))
 		return NULL;
 
 	/* determine how many iovecs/pages there are, up front */
+	/* 统计iovec数组缓存的字节数和页数(向上取整) */
 	do {
-		iovec_len_used += iov[nr_iovecs].iov_len;
-		iovec_pages_used += num_pages_spanned(&iov[nr_iovecs]);
+		iovec_len_used += iov[nr_iovecs].iov_len; /* 累加所有iovec可用大小 */
+		iovec_pages_used += num_pages_spanned(&iov[nr_iovecs]); /* 累加iovec用的page数 */
 		nr_iovecs++;
 	} while (iovec_len_used < len);
 
 	/* single kmalloc for pinned list, page_list[], and the page arrays */
+	/* 这里分配dma_pinned_list结构, 
+	 * 该结构由最上面一个dma_pinned_list结构,
+	 * 接着nr_iovecs个dma_page_list结构(每个dma_page_list结构对应一个iovec),
+	 * 最后接着iovec_pages_used个page的指针(对应iovec缓存的所有页)
+	 */
 	local_list = kmalloc(sizeof(*local_list)
 		+ (nr_iovecs * sizeof (struct dma_page_list))
 		+ (iovec_pages_used * sizeof (struct page*)), GFP_KERNEL);
@@ -75,10 +84,15 @@ struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len)
 		goto out;
 
 	/* list of pages starts right after the page list array */
+	/* pages指针移至dma_page_list最后元素的尾部,即第一个page的地址 */
 	pages = (struct page **) &local_list->page_list[nr_iovecs];
 
 	local_list->nr_iovecs = 0;
 
+	/* 以下循环初始化dma_pinned_list结构以及其下面的dma_page_list结构和page
+	 * 使得dma_pinned_list的page_list数组对应于iovec数组,
+	 * 并且dma_page_list的page指向iovec中缓存的页,即应用层缓存页
+	 */
 	for (i = 0; i < nr_iovecs; i++) {
 		struct dma_page_list *page_list = &local_list->page_list[i];
 
@@ -87,14 +101,17 @@ struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len)
 		if (!access_ok(VERIFY_WRITE, iov[i].iov_base, iov[i].iov_len))
 			goto unpin;
 
-		page_list->nr_pages = num_pages_spanned(&iov[i]);
-		page_list->base_address = iov[i].iov_base;
+		page_list->nr_pages = num_pages_spanned(&iov[i]); /* 设置对应的页个数 */
+		page_list->base_address = iov[i].iov_base; /* 设置对应的地址 */
 
-		page_list->pages = pages;
-		pages += page_list->nr_pages;
+		page_list->pages = pages; /* 设置存放页地址的地址 */
+		pages += page_list->nr_pages; /* 移动下一次存放的地址 */
 
 		/* pin pages down */
 		down_read(&current->mm->mmap_sem);
+		/* 通过get_user_pages()获取iov中应用层的地址对应的页,
+		 * 保存到page_list->pages地址中, 同时返回获取到的页个数
+		 */
 		ret = get_user_pages(
 			current,
 			current->mm,
@@ -106,7 +123,7 @@ struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len)
 			NULL);
 		up_read(&current->mm->mmap_sem);
 
-		if (ret != page_list->nr_pages)
+		if (ret != page_list->nr_pages) /* 获取的页数不符, 出错 */
 			goto unpin;
 
 		local_list->nr_iovecs = i + 1;
@@ -115,6 +132,7 @@ struct dma_pinned_list *dma_pin_iovec_pages(struct iovec *iov, size_t len)
 	return local_list;
 
 unpin:
+	/* 出错时释放掉返回NULL */
 	dma_unpin_iovec_pages(local_list);
 out:
 	return NULL;

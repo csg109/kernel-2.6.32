@@ -4272,18 +4272,18 @@ void tcp_parse_options(struct sk_buff *skb, struct tcp_options_received *opt_rx,
 	}
 }
 
-/* 只查看timestamp选项 */
+/* 只查看timestamp选项, 返回1表示收到了时间戳选项 */
 static int tcp_parse_aligned_timestamp(struct tcp_sock *tp, struct tcphdr *th)
 {
 	__be32 *ptr = (__be32 *)(th + 1);
 
 	if (*ptr == htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16)
 			  | (TCPOPT_TIMESTAMP << 8) | TCPOLEN_TIMESTAMP)) {
-		tp->rx_opt.saw_tstamp = 1;
+		tp->rx_opt.saw_tstamp = 1; /* 标记最后的数据包收到了时间戳 */
 		++ptr;
-		tp->rx_opt.rcv_tsval = ntohl(*ptr);
+		tp->rx_opt.rcv_tsval = ntohl(*ptr); /* 收到的对方时间戳 */
 		++ptr;
-		tp->rx_opt.rcv_tsecr = ntohl(*ptr);
+		tp->rx_opt.rcv_tsecr = ntohl(*ptr); /* 收到对端对本端的时间戳回显 */
 		return 1;
 	}
 	return 0;
@@ -4296,13 +4296,13 @@ static int tcp_parse_aligned_timestamp(struct tcp_sock *tp, struct tcphdr *th)
 static int tcp_fast_parse_options(struct sk_buff *skb, struct tcphdr *th,
 				  struct tcp_sock *tp)
 {
-	if (th->doff == sizeof(struct tcphdr) >> 2) {
+	if (th->doff == sizeof(struct tcphdr) >> 2) { /* 不包含TCP选项 */
 		tp->rx_opt.saw_tstamp = 0;
 		return 0;
 	} else if (tp->rx_opt.tstamp_ok &&
-		   th->doff == (sizeof(struct tcphdr)>>2)+(TCPOLEN_TSTAMP_ALIGNED>>2)) {
+		   th->doff == (sizeof(struct tcphdr)>>2)+(TCPOLEN_TSTAMP_ALIGNED>>2)) { /* 只含有时间戳选项 */
 		if (tcp_parse_aligned_timestamp(tp, th))
-			return 1;
+			return 1; /* 通过PAWS检测 */
 	}
 	tcp_parse_options(skb, &tp->rx_opt, 1);
 	return 1;
@@ -4409,13 +4409,14 @@ static int tcp_disordered_ack(const struct sock *sk, const struct sk_buff *skb)
 		(s32)(tp->rx_opt.ts_recent - tp->rx_opt.rcv_tsval) <= (inet_csk(sk)->icsk_rto * 1024) / HZ);
 }
 
+/* 进行PAWS检测, 检测时间戳递增通过返回0, 否则返回1则需要丢弃数据包 */
 static inline int tcp_paws_discard(const struct sock *sk,
 				   const struct sk_buff *skb)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
-	return !tcp_paws_check(&tp->rx_opt, TCP_PAWS_WINDOW) &&
-	       !tcp_disordered_ack(sk, skb);
+	return !tcp_paws_check(&tp->rx_opt, TCP_PAWS_WINDOW) && /* 时间戳必须递增 */
+	       !tcp_disordered_ack(sk, skb); /* 如果不是递增则判断是不是乱序 */
 }
 
 /* Check segment sequence number for validity.
@@ -4431,10 +4432,11 @@ static inline int tcp_paws_discard(const struct sock *sk,
  * (borrowed from freebsd)
  */
 
+/* 检测序列号合法性,返回1表示合法 */
 static inline int tcp_sequence(struct tcp_sock *tp, u32 seq, u32 end_seq)
 {
-	return	!before(end_seq, tp->rcv_wup) &&
-		!after(seq, tp->rcv_nxt + tcp_receive_window(tp));
+	return	!before(end_seq, tp->rcv_wup) && /* 不是之前已经被接收的数据 */
+		!after(seq, tp->rcv_nxt + tcp_receive_window(tp)); /* 在接收窗口内 */
 }
 
 /* When we get a reset we do this. */
@@ -5568,23 +5570,24 @@ static void tcp_urg(struct sock *sk, struct sk_buff *skb, struct tcphdr *th)
 	}
 }
 
+/* 校验checksum拷贝skb的整个数据到应用层,返回0为成功 */
 static int tcp_copy_to_iovec(struct sock *sk, struct sk_buff *skb, int hlen)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	int chunk = skb->len - hlen;
+	int chunk = skb->len - hlen; /* 应用数据大小 */
 	int err;
 
 	local_bh_enable();
-	if (skb_csum_unnecessary(skb))
+	if (skb_csum_unnecessary(skb)) /* 如果已经校验完checksum则直接拷贝数据 */
 		err = skb_copy_datagram_iovec(skb, hlen, tp->ucopy.iov, chunk);
-	else
+	else /* 否则校验checksum并拷贝数据 */
 		err = skb_copy_and_csum_datagram_iovec(skb, hlen,
 						       tp->ucopy.iov);
 
-	if (!err) {
+	if (!err) { /* 接收数据成功后调整剩余大小和copied_seq */
 		tp->ucopy.len -= chunk;
 		tp->copied_seq += chunk;
-		tcp_rcv_space_adjust(sk);
+		tcp_rcv_space_adjust(sk); /* 接收完调整接收缓存 */
 	}
 
 	local_bh_disable();
@@ -5627,33 +5630,38 @@ static int tcp_dma_try_early_copy(struct sock *sk, struct sk_buff *skb,
 				  int hlen)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	int chunk = skb->len - hlen;
+	int chunk = skb->len - hlen; /* skb携带的数据长度 */
 	int dma_cookie;
 	int copied_early = 0;
 
 	if (tp->ucopy.wakeup)
 		return 0;
 
+	/* 获取dma channel */
 	if (!tp->ucopy.dma_chan && tp->ucopy.pinned_list)
 		tp->ucopy.dma_chan = dma_find_channel(DMA_MEMCPY);
 
-	if (tp->ucopy.dma_chan && skb_csum_unnecessary(skb)) {
+	if (tp->ucopy.dma_chan && skb_csum_unnecessary(skb)) { /* checksum已经校验正确 */
 
 		dma_cookie = dma_skb_copy_datagram_iovec(tp->ucopy.dma_chan,
 							 skb, hlen,
 							 tp->ucopy.iov, chunk,
 							 tp->ucopy.pinned_list);
 
-		if (dma_cookie < 0)
+		if (dma_cookie < 0) /* 出错 */
 			goto out;
 
 		tp->ucopy.dma_cookie = dma_cookie;
 		copied_early = 1;
 
+		/* 通知DMA拷贝成功后调整ucopy.len和copied_seq */
 		tp->ucopy.len -= chunk;
 		tp->copied_seq += chunk;
-		tcp_rcv_space_adjust(sk);
+		tcp_rcv_space_adjust(sk); /* 调整接收缓存 */
 
+		/* 如果已经满足进程需要的大小或者携带了PSH或者接收缓存使用超过一半,
+		 * 则唤醒进程来接收数据
+		 */
 		if ((tp->ucopy.len == 0) ||
 		    (tcp_flag_word(tcp_hdr(skb)) & TCP_FLAG_PSH) ||
 		    (atomic_read(&sk->sk_rmem_alloc) > (sk->sk_rcvbuf >> 1))) {
@@ -5678,18 +5686,22 @@ static int tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 	struct tcp_sock *tp = tcp_sk(sk);
 
 	/* RFC1323: H1. Apply PAWS check first. */
-	/* 判断timestamp时间戳是否合法, 如果时间戳不是递增的，则数据包丢弃 */
+	/* 如果包含时间戳选项则进行PAWS检测: 
+	 * 即判断timestamp时间戳是否是递增的,如果时间戳非递增又不是乱序的话则丢弃数据包 
+	 */
 	if (tcp_fast_parse_options(skb, th, tp) && tp->rx_opt.saw_tstamp &&
 	    tcp_paws_discard(sk, skb)) {
-		if (!th->rst) {
+		if (!th->rst) { /* 非RST回复ACK后丢弃 */
 			NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_PAWSESTABREJECTED);
 			tcp_send_dupack(sk, skb);
 			goto discard;
 		}
+		/* 如果是PAWS检测不通过的RST则也要正常处理RST流程 */
 		/* Reset is accepted even if it did not pass PAWS. */
 	}
 
 	/* Step 1: check sequence number */
+	/* 序列号合法性检查, 不通过则发送ACK后丢弃 */
 	if (!tcp_sequence(tp, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq)) {
 		/* RFC793, page 37: "In all states except SYN-SENT, all reset
 		 * (RST) segments are validated by checking their SEQ-fields."
@@ -5703,6 +5715,7 @@ static int tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 	}
 
 	/* Step 2: check RST bit */
+	/* 接收到RST */
 	if (th->rst) {
 		tcp_reset(sk);
 		goto discard;
@@ -5711,24 +5724,25 @@ static int tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 	/* ts_recent update must be made after we are sure that the packet
 	 * is in window.
 	 */
-	tcp_replace_ts_recent(tp, TCP_SKB_CB(skb)->seq);
+	tcp_replace_ts_recent(tp, TCP_SKB_CB(skb)->seq); /* 保存最新收到的时间戳 */
 
 	/* step 3: check security and precedence [ignored] */
 
 	/* step 4: Check for a SYN in window. */
+	/* 如果收到了syn包且序列号在rcv_nxt之后,则断开连接并回复RST */
 	if (th->syn && !before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
 		if (syn_inerr)
 			TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_INERRS);
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPABORTONSYN);
-		tcp_reset(sk);
-		return -1;
+		tcp_reset(sk); /* 断开连接 */
+		return -1; /* -1表示数据包导致连接出错,并需要回复RST给对端 */
 	}
 
-	return 1;
+	return 1; /* 1表示正常的数据包 */
 
 discard:
 	__kfree_skb(skb);
-	return 0;
+	return 0; /* 0表示不合法的数据包,直接丢弃 */
 }
 
 /*
@@ -5775,7 +5789,7 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	 *	We do checksum and copy also but from device to kernel.
 	 */
 
-	tp->rx_opt.saw_tstamp = 0;
+	tp->rx_opt.saw_tstamp = 0; /* 最后一个数据包收到时间戳的标记先置0 */
 
 	/*	pred_flags is 0xS?10 << 16 + snd_wnd
 	 *	if header_prediction is to be made
@@ -5802,12 +5816,17 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 		 */
 
 		/* Check timestamp */
+		/* 这里只检查时间戳选项(PAWS检测) */
 		if (tcp_header_len == sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) {
 			/* No? Slow path! */
+			/* 如果没有时间戳则走慢速路径 */
 			if (!tcp_parse_aligned_timestamp(tp, th))
 				goto slow_path;
 
 			/* If PAWS failed, check it more carefully in slow path */
+			/* 本次收到的时间戳比上次收到的时间戳早的话则走慢速路径,
+			 * 这里还未更新ts_recent, 因为checksum和数据包的正确性还没验证
+			 */
 			if ((s32)(tp->rx_opt.rcv_tsval - tp->rx_opt.ts_recent) < 0)
 				goto slow_path;
 
@@ -5818,9 +5837,9 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			 */
 		}
 
-		if (len <= tcp_header_len) {
+		if (len <= tcp_header_len) { /* 如果没有携带任何数据/或长度出错 */
 			/* Bulk data transfer: sender */
-			if (len == tcp_header_len) {
+			if (len == tcp_header_len) { /* 没有携带数据 */
 				/* Predicted packet is in window by definition.
 				 * seq == rcv_nxt and rcv_wup <= rcv_nxt.
 				 * Hence, check seq<=rcv_wup reduces to:
@@ -5828,37 +5847,46 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				if (tcp_header_len ==
 				    (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) &&
 				    tp->rcv_nxt == tp->rcv_wup)
-					tcp_store_ts_recent(tp);
+					tcp_store_ts_recent(tp); /* 记录时间戳 */
 
 				/* We know that such packets are checksummed
 				 * on entry.
 				 */
-				tcp_ack(sk, skb, 0);
+				tcp_ack(sk, skb, 0); /* 处理ack */
 				__kfree_skb(skb);
-				tcp_data_snd_check(sk);
+				tcp_data_snd_check(sk); /* 尝试发送数据 */
 				return 0;
-			} else { /* Header too small */
+			} else { /* Header too small */ /* skb长度出错, 直接丢弃skb */
 				TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_INERRS);
 				goto discard;
 			}
-		} else {
-			int eaten = 0;
+		} else { /* skb携带了数据, 则需要处理数据的接收 */
+			int eaten = 0; /* eaten为1表示用进程触发了backlog/prequeue并将skb整个数据读取了 */
 			int copied_early = 0;
 
+			/* receive queue为空同时有进程在等待数据
+			 * 且skb的数据不超过正在等待的进程需要的数据 (说明skb整个数据都能被进程接收)
+			 */
 			if (tp->copied_seq == tp->rcv_nxt &&
 			    len - tcp_header_len <= tp->ucopy.len) {
 #ifdef CONFIG_NET_DMA
 				if (tcp_dma_try_early_copy(sk, skb, tcp_header_len)) {
-					copied_early = 1;
+					copied_early = 1; /* 说明已经通知DMA拷贝 */
 					eaten = 1;
 				}
 #endif
+				/* ucopy.task非空和owned为1说明是tcp_recvmsg()数据不够时
+				 * 由backlog或prequeue触发接收的
+				 */
 				if (tp->ucopy.task == current &&
 				    sock_owned_by_user(sk) && !copied_early) {
 					__set_current_state(TASK_RUNNING);
 
+					/* 校验checksum并将skb的全部数据拷贝到应用层
+					 * 返回0说明成功
+					 */
 					if (!tcp_copy_to_iovec(sk, skb, tcp_header_len))
-						eaten = 1;
+						eaten = 1; /* 拷贝后标记整个skb被eaten */
 				}
 				if (eaten) {
 					/* Predicted packet is in window by definition.
@@ -5869,17 +5897,18 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 					    (sizeof(struct tcphdr) +
 					     TCPOLEN_TSTAMP_ALIGNED) &&
 					    tp->rcv_nxt == tp->rcv_wup)
-						tcp_store_ts_recent(tp);
+						tcp_store_ts_recent(tp); /* 保存最近收到的时间戳 */
 
-					tcp_rcv_rtt_measure_ts(sk, skb);
+					tcp_rcv_rtt_measure_ts(sk, skb); /* 携带时间戳时计算接收端的RTT */
 
 					__skb_pull(skb, tcp_header_len);
-					tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+					tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq; /* 更新rcv_nxt */
 					NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITSTOUSER);
 				}
 				if (copied_early)
 					tcp_cleanup_rbuf(sk, skb->len);
 			}
+			/* 如果以上没有把skb都接收掉, 就需要加入receive queue */
 			if (!eaten) {
 				/* 校验checksum */
 				if (tcp_checksum_complete_user(sk, skb))
@@ -5892,43 +5921,46 @@ int tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				if (tcp_header_len ==
 				    (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) &&
 				    tp->rcv_nxt == tp->rcv_wup)
-					tcp_store_ts_recent(tp);
+					tcp_store_ts_recent(tp); /* 保存时间戳 */
 
-				tcp_rcv_rtt_measure_ts(sk, skb);
+				tcp_rcv_rtt_measure_ts(sk, skb); /* 携带时间戳时计算接收端的RTT */
 
+				/* 如果预分配不足了,则走慢速路径 */
 				if ((int)skb->truesize > sk->sk_forward_alloc)
 					goto step5;
 
 				NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITS);
 
 				/* Bulk data transfer: receiver */
-				__skb_pull(skb, tcp_header_len);
-				__skb_queue_tail(&sk->sk_receive_queue, skb);
+				__skb_pull(skb, tcp_header_len); /* 跳过TCP首部 */
+				__skb_queue_tail(&sk->sk_receive_queue, skb); /* 加入receive queue */
 				skb_set_owner_r(skb, sk);
-				tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
+				tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq; /* 更新rcv_nxt */
 			}
 
 			tcp_event_data_recv(sk, skb); /* Delay-ack控制、接收端估算RTT、接收窗口阈值调整 */
 
+			/* 快速路径中只有ACK变化了才需要处理ACK和尝试发送 */
 			if (TCP_SKB_CB(skb)->ack_seq != tp->snd_una) {
 				/* Well, only one small jumplet in fast path... */
-				tcp_ack(sk, skb, FLAG_DATA);
-				tcp_data_snd_check(sk);
-				if (!inet_csk_ack_scheduled(sk))
+				tcp_ack(sk, skb, FLAG_DATA); /* 处理ACK */
+				tcp_data_snd_check(sk); /* 尝试发送数据、发送缓存调整 */
+				/* 如果发送了数据携带了ACK,则不需要单独发送ACK了 */
+				if (!inet_csk_ack_scheduled(sk)) 
 					goto no_ack;
 			}
 
 			if (!copied_early || tp->rcv_nxt != tp->rcv_wup)
-				__tcp_ack_snd_check(sk, 0);
+				__tcp_ack_snd_check(sk, 0); /* 回复ACK */
 no_ack:
 #ifdef CONFIG_NET_DMA
-			if (copied_early)
+			if (copied_early) /* 使用了DMA拷贝,则先将skb加入异步队列待拷贝完成后删除 */
 				__skb_queue_tail(&sk->sk_async_wait_queue, skb);
 			else
 #endif
-			if (eaten)
+			if (eaten) /* 如果skb已经被读取了则直接释放 */
 				__kfree_skb(skb);
-			else
+			else /* 否则唤醒等在等待读取的进程 */
 				sk->sk_data_ready(sk, 0);
 			return 0;
 		}
@@ -5947,21 +5979,22 @@ slow_path:
 	 *	Standard slow path.
 	 */
 
+	/* 检查数据包合法性,1为合法,0为丢弃,-1为连接异常并发送RST */
 	res = tcp_validate_incoming(sk, skb, th, 1);
 	if (res <= 0)
 		return -res;
 
 step5:
-	if (th->ack && tcp_ack(sk, skb, FLAG_SLOWPATH) < 0)
+	if (th->ack && tcp_ack(sk, skb, FLAG_SLOWPATH) < 0) /* 处理ACK */
 		goto discard;
 
-	tcp_rcv_rtt_measure_ts(sk, skb);
+	tcp_rcv_rtt_measure_ts(sk, skb); /* 携带时间戳时计算接收端的RTT */
 
 	/* Process urgent data. */
-	tcp_urg(sk, skb, th);
+	tcp_urg(sk, skb, th); /* 处理紧急数据 */
 
 	/* step 7: process the segment text */
-	tcp_data_queue(sk, skb); /* 处理接收数据 */
+	tcp_data_queue(sk, skb); /* 接收数据 */
 
 	tcp_data_snd_check(sk); /* 检查是否需要发送数据，以及是否需要扩大发送缓存 */
 	tcp_ack_snd_check(sk);  /* 发送对数据的ACK */

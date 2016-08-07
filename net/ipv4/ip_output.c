@@ -397,6 +397,7 @@ packet_routed:
 		ip_options_build(skb, opt, inet->daddr, rt, 0);
 	}
 
+	/* 这里选择IP头的ipid号 */
 	ip_select_ident_more(iph, &rt->u.dst, sk,
 			     (skb_shinfo(skb)->gso_segs ?: 1) - 1);
 

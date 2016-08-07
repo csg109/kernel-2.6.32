@@ -268,7 +268,11 @@ struct sock {
 	struct sk_buff_head	sk_receive_queue; /* 接收队列 */
 	struct sk_buff_head	sk_write_queue;	/* 发送队列，保存着从una开始的所有skb */
 #ifdef CONFIG_NET_DMA
-	struct sk_buff_head	sk_async_wait_queue;
+	struct sk_buff_head	sk_async_wait_queue; /* 用于应用层读取时使用DMA的异步等待队列
+						      * 当skb处理接收数据后正在等待DMA异步拷贝时
+						      * skb会从sk_receive_queue移至sk_async_wait_queue
+						      * 等待DMA完成后再删除
+						      */
 #endif
 	int			sk_wmem_queued; /* 发送缓冲区已使用的大小,(包括skb结构本身) */
 	int			sk_forward_alloc; /* 预分配缓存的大小, 包括发送和接收的 */
@@ -1732,13 +1736,17 @@ extern int sock_tx_timestamp(struct msghdr *msg,
  * locked so that the sk_buff queue operation is ok.
 */
 #ifdef CONFIG_NET_DMA
+/* 在skb数据被读取之后将skb删除并释放
+ * copied_early为1说明在使用DMA的时skb数据完全被读取,
+ * 但因为DMA是异步的所以不能马上释放skb,而是先放到sk_async_wait_queue
+ */
 static inline void sk_eat_skb(struct sock *sk, struct sk_buff *skb, int copied_early)
 {
-	__skb_unlink(skb, &sk->sk_receive_queue);
+	__skb_unlink(skb, &sk->sk_receive_queue); /* 从receive queue删除 */
 	if (!copied_early)
 		__kfree_skb(skb);
 	else
-		__skb_queue_tail(&sk->sk_async_wait_queue, skb);
+		__skb_queue_tail(&sk->sk_async_wait_queue, skb); /* DMA的情况 */
 }
 #else
 static inline void sk_eat_skb(struct sock *sk, struct sk_buff *skb, int copied_early)

@@ -252,7 +252,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 							   inet->sport,
 							   usin->sin_port);
 
-	inet->id = tp->write_seq ^ jiffies;
+	inet->id = tp->write_seq ^ jiffies; /* 初始化ipid */
 
 	err = tcp_connect(sk); /* 这里发送SYN主动连接 */
 	rt = NULL;

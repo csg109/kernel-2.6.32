@@ -306,10 +306,13 @@ struct tcp_sock {
 		int			memory;		/* 表示prequeue队列中skb占用的缓存大小 */
 		int			len;		/* 进程还需要读取的大小 */
 #ifdef CONFIG_NET_DMA
+		/* 以下字段在NET_DMA启用时使用,用于读取时的DMA异步拷贝 */
 		/* members for async copy */
-		struct dma_chan		*dma_chan;
-		int			wakeup;
-		struct dma_pinned_list	*pinned_list;
+		struct dma_chan		*dma_chan;	/* 指向dma channel, 由dma_find_channel(DMA_MEMCPY)返回 */
+		int			wakeup;		/* 为1标记正在唤醒进程接收数据 */
+		struct dma_pinned_list	*pinned_list; 	/* tp->ucopy.pinned_list 指向DMA需要的dma_pinned_list结构,
+							 * 如果为空则表示现在不使用DMA拷贝 
+							 */
 		dma_cookie_t		dma_cookie;
 #endif
 	} ucopy;

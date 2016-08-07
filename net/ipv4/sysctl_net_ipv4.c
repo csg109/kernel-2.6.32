@@ -573,6 +573,16 @@ static struct ctl_table ipv4_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
 	},
+	/* tcp_low_latency: 低延迟模式, 默认不开启. 
+	 * 低延迟指的是对TCP协议栈来说处理较为及时,但是代价是反而增加了应用层接收的延迟.
+	 * 具体为：
+	 * 1.开启后不使用prequeue,这样TCP协议接收处理数据包的延时较低,
+	 * 比如当有进程读等待时直接在软中断处理接收而不是先加入prequeue唤醒进程来处理,
+	 * 这样ACK回复较为及时.
+	 * 2.开启后不使用tp->ucopy,在有应用层需要数据时，处理backlog时
+	 * 优先处理TCP协议栈本身的工作(比如先把skb加入receive queue),
+	 * 而不是优先把skb的数据拷贝给应用层(数据直接提交给应用层不用加入receive queue)
+	 */
 	{
 		.ctl_name	= NET_TCP_LOW_LATENCY,
 		.procname	= "tcp_low_latency",

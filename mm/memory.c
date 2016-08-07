@@ -1571,6 +1571,19 @@ EXPORT_SYMBOL(__get_user_pages);
  *
  * See also get_user_pages_fast, for performance critical applications.
  */
+/* 获取用户区进程使用内存的某个页 
+ *
+ * @tsk:指定进程，如current表示当前进程
+ * @mm: 进程的内存占用结构，如current->mm
+ * @start: 要获取其页面的起始逻辑地址,是用户空间使用的一个地址
+ * @nr_pages: 需要获取的页数
+ * @write: 是否要对该页进行写入
+ * @force:
+ * @pages: 存放获取的struct page的指针数组
+ * @vmas: 返回各个页对应的struct vm_area_struct，可以传入NULL表示不获取
+ *
+ * return: 返回实际获取的页数, 具体页保存在参数pages数组中
+ */
 int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 		unsigned long start, int nr_pages, int write, int force,
 		struct page **pages, struct vm_area_struct **vmas)
