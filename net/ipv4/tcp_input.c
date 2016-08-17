@@ -3883,7 +3883,7 @@ static int tcp_process_frto(struct sock *sk, int flag)
 	tcp_verify_left_out(tp);
 
 	/* Duplicate the behavior from Loss state (fastretrans_alert) */
-	/* 如果ACK使得una前进，则RTO的重传技术清零 */
+	/* 如果ACK使得una前进，则RTO的重传计数清零 */
 	if (flag & FLAG_DATA_ACKED)
 		inet_csk(sk)->icsk_retransmits = 0;
 

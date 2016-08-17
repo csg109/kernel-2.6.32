@@ -171,7 +171,7 @@ static inline void westwood_fast_bw(struct sock *sk)
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct westwood *w = inet_csk_ca(sk);
 
-	westwood_update_window(sk);
+	westwood_update_window(sk); /* ¸üĞÂ´ø¿í */
 
 	w->bk += tp->snd_una - w->snd_una;
 	w->snd_una = tp->snd_una;

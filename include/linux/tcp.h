@@ -241,7 +241,9 @@ struct tcp_options_received {
 	u16	user_mss;  	/* mss requested by user in ioctl */
 				/* 用户设置的最大MSS */
 	u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
-				/* syn包收到的MSS大小, 如果比user_mss大，则置为user_mss*/
+				/* syn包收到的MSS大小, 如果比user_mss大，则置为user_mss
+				 * mss_clamp和user_mss都是不考虑TCP选项的
+				 */
 };
 
 /* This is the max number of SACKS that we'll generate and process. It's safe
@@ -270,7 +272,9 @@ struct tcp_sock {
 	/* inet_connection_sock has to be the first member of tcp_sock */
 	struct inet_connection_sock	inet_conn;
 	u16	tcp_header_len;	/* Bytes of tcp header to send		*/
-				/* TCP首部长度 */
+				/* TCP首部长度, 包括TCP选项固定的部分,比如时间戳选项
+				 * 但是不包括动态的选项, 比如SACK段
+				 */
 	u16	xmit_size_goal_segs; /* Goal for segmenting output packets */
 
 /*
@@ -325,7 +329,12 @@ struct tcp_sock {
 	u32	snd_wnd;	/* The window we expect to receive	*/
 	/* 记录来自对方通告的窗口的最大值 */
 	u32	max_window;	/* Maximal window ever seen from peer	*/
-	/* 发送方当前有效MSS */
+	/* 发送方当前有效MSS, 由tcp_sync_mss()维护
+	 * 已经考虑TCP选项中固定的部分(比如时间戳选项),
+	 * 但是未考虑TCP选项中动态的部分(比如SACK选项), 
+	 * 如果当前需要回复SACK段,则需要从mss_cache中减去SACK段的大小才是最终的mss,
+	 * 详见tcp_current_mss()
+	 */
 	u32	mss_cache;	/* Cached effective mss, not including SACKS */
 	/* 接收窗口的上限值，一般为(65535U << wscale)，即TCP首部能表示的最大接收窗口 */	
 	u32	window_clamp;	/* Maximal window to advertise		*/

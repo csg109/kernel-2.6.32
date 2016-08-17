@@ -95,7 +95,7 @@ struct inet_connection_sock {
  	struct timer_list	  icsk_retransmit_timer;	/* 重传定时器 */
  	struct timer_list	  icsk_delack_timer;		/* delay ack定时器 */
 	__u32			  icsk_rto;			/* RTO超时时间 */
-	__u32			  icsk_pmtu_cookie;
+	__u32			  icsk_pmtu_cookie;		/* mtu的值, 从路由缓存获得, 由tcp_sync_mss()维护 */
 	const struct tcp_congestion_ops *icsk_ca_ops;		/* 拥塞控制算法 */
 	const struct inet_connection_sock_af_ops *icsk_af_ops;  /* TCP为ipv4_specific */
 	unsigned int		  (*icsk_sync_mss)(struct sock *sk, u32 pmtu);
