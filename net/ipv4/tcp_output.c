@@ -2239,15 +2239,22 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 
 		if (fwd_rexmitting) { /* 向前重传 */
 begin_fwd:
-			/* 只有当seq < 最大sack过的seq 才向前重传，否则退出重传
-			 * tcp_highest_sack_seq()返回sack过的最大seq;如果没有任何sack则返回una
-			 */
+			/* 向前重传是重传从标记为丢失的最高序列号的skb到最高被sack过的skb. */
 			if (!before(TCP_SKB_CB(skb)->seq, tcp_highest_sack_seq(tp)))
 				break;
 			mib_idx = LINUX_MIB_TCPFORWARDRETRANS;
 
-		} else if (!before(TCP_SKB_CB(skb)->seq, tp->retransmit_high)) { /* seq大于等于retransmit_high, 
-		  * 此skb的seq >= 已经重传过的最高seq，说明往后重传的skb都是未重传过的skb */
+		} else if (!before(TCP_SKB_CB(skb)->seq, tp->retransmit_high)) { /* skb->seq >= 最高标记为丢失的序列号 */
+			/* 到达这里说明被标记为丢失的已经都重传过, 从本skb开始都是未被标记为丢失的数据包
+			 *  
+			 * 然后检查是否开启向前重传, 如果不开启则退出重传。
+			 * 向前重传是重传从标记为丢失的最高序列号的skb到最高被sack过的skb.
+			 *
+			 * 满足以下所有条件开启向前重传：
+			 * 1. 处于recovery状态
+			 * 2. 启用sack
+			 * 3. 无法发送新数据(无新数据/nagle限制/接收窗口限制)
+			 */
 			tp->retransmit_high = last_lost;
 			if (!tcp_can_forward_retransmit(sk)) /* 判断当前拥塞状态和拥塞算法能否向前重传，不能的话就退出 */
 				break;
@@ -2264,7 +2271,7 @@ begin_fwd:
 				hole = skb;
 			continue;
 
-		} else { /* 丢失包 */
+		} else { /* 这里为标记为丢失的数据包 */
 			last_lost = TCP_SKB_CB(skb)->end_seq;
 			if (icsk->icsk_ca_state != TCP_CA_Loss)
 				mib_idx = LINUX_MIB_TCPFASTRETRANS;

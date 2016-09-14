@@ -429,7 +429,7 @@ struct tcp_sock {
 
 	int     lost_cnt_hint;		/* 已经标志了多少个段 */
 	u32     retransmit_high;	/* L-bits may be on up to this seqno */
-					/* 需要重传的最高序列号 */
+					/* 需要重传的最高序列号,即标记为丢失的最高seq的skb的end_seq */
 
 	u32	lost_retrans_low;	/* Sent seq after any rxmit (lowest) */
 					/* 记录第一个重传包的snd_nxt, 即重传包对应的最小snd_nxt */

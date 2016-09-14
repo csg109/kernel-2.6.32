@@ -652,7 +652,7 @@ struct tcp_skb_cb {
 #define TCPCB_FLAG_CWR		0x80
 
 	__u8		sacked;		/* State flags for SACK/FACK.	*//* SACK/FACK的状态flag或者是sack option的偏移(相对于tcp头的) */
-#define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*//* 有这个域说明当前的tcpcb是被sack块确认的 */
+#define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*//* 已经被sack确认 */
 #define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*//* 表示重传的帧  */
 #define TCPCB_LOST		0x04	/* SKB is lost			*//* 丢失 */
 #define TCPCB_TAGBITS		0x07	/* All tag bits			*/
@@ -1488,6 +1488,7 @@ static inline int tcp_write_queue_empty(struct sock *sk)
 /* Start sequence of the highest skb with SACKed bit, valid only if
  * sacked > 0 or when the caller has ensured validity by itself.
  */
+/* 返回sack过的最大seq, 如果没有任何sack则返回una */
 static inline u32 tcp_highest_sack_seq(struct tcp_sock *tp)
 {
 	if (!tp->sacked_out)

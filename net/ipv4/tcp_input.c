@@ -1805,7 +1805,7 @@ static struct sk_buff *tcp_sacktag_skip(struct sk_buff *skb, struct sock *sk,
 		if (skb == tcp_send_head(sk))
 			break;
 
-		/* 如果skb的结束序列号大于我们传递进来的序列号，则说明这个skb包含了我们sack确认的段，因此我们退出循环。  */
+		/* 如果skb的结束序列号大于我们传递进来的序列号，则说明这个skb包含了我们sack确认的段，因此我们退出循环. */
 		if (after(TCP_SKB_CB(skb)->end_seq, skip_to_seq))
 			break;
 
@@ -1888,7 +1888,7 @@ tcp_sacktag_write_queue(struct sock *sk, struct sk_buff *ack_skb,
 		goto out;
 
 	used_sacks = 0; 	/* 用于记录合法的SACK段数 */
-	first_sack_index = 0; 	/* 第一个合法SACK段的下标（因为后面会进行冒泡排序） */
+	first_sack_index = 0; 	/* 第一个合法SACK段的下标(因为后面会进行冒泡排序)*/
 
 	/* 进行SACK块的合法性检查，并确定要使用哪些SACK块 */
 	for (i = 0; i < num_sacks; i++) {
@@ -1924,7 +1924,8 @@ tcp_sacktag_write_queue(struct sock *sk, struct sk_buff *ack_skb,
 		}
 
 		/* Ignore very old stuff early */
-		if (!after(sp[used_sacks].end_seq, prior_snd_una)) /* 忽略已确认过的块 */
+		/* 忽略已确认过的块,包括处于una之前的D-SACK */
+		if (!after(sp[used_sacks].end_seq, prior_snd_una)) 
 			continue;
 
 		used_sacks++; /* 实际要使用的SACK块数，忽略不合法和已确认过的 */
@@ -1966,7 +1967,7 @@ tcp_sacktag_write_queue(struct sock *sk, struct sk_buff *ack_skb,
 		u32 start_seq = sp[i].start_seq;
 		u32 end_seq = sp[i].end_seq;
 		int dup_sack = (found_dup_sack && (i == first_sack_index)); /* 这个SACK块是否为DSACK块 */
-		struct tcp_sack_block *next_dup = NULL;
+		struct tcp_sack_block *next_dup = NULL; /* 如果下一个块为D-SACK则指向 */
 
 		/* 如果下一个SACK块是DSACK块，则next_dup指向DSACK块 */
 		if (found_dup_sack && ((i + 1) == first_sack_index))
@@ -3190,7 +3191,7 @@ static void tcp_update_cwnd_in_recovery(struct sock *sk, int newly_acked_sacked,
 		 * 		来表示目前可以发送的数据包个数,用来控制按比例减小
 		 */
 		u64 dividend = (u64)tp->snd_ssthresh * tp->prr_delivered +
-			       tp->prior_cwnd - 1;
+			       tp->prior_cwnd - 1; /* 这里加上 prior_cwnd -1 是为了向上取整 */
 		sndcnt = div_u64(dividend, tp->prior_cwnd) - tp->prr_out;
 	} else {
 		/* tp->prr_delivered - tp->prr_out首先用于撤销之前对pipe的减小，即首先让网络中的数据包恢复守恒。 
