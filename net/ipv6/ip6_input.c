@@ -51,6 +51,7 @@ inline int ip6_rcv_finish( struct sk_buff *skb)
 	if (skb_dst(skb) == NULL)
 		ip6_route_input(skb);
 
+	/* µ÷ÓÃip6_input() */
 	return dst_input(skb);
 }
 

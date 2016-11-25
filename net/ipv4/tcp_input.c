@@ -4882,6 +4882,7 @@ queue_and_out:
 			/* RFC2581. 4.2. SHOULD send immediate ACK, when
 			 * gap in queue is filled.
 			 */
+			/* 如果乱序队列为空了，则关闭pingpong模式 */
 			if (skb_queue_empty(&tp->out_of_order_queue))
 				inet_csk(sk)->icsk_ack.pingpong = 0;
 		}

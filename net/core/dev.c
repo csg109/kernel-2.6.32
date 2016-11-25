@@ -2856,7 +2856,7 @@ ncls:
 
 	/* either one will determine the exact match */
 	exact_dev = skb->deliver_no_wcard ? null_or_orig : null_or_bond;
-	type = skb->protocol;
+	type = skb->protocol; /* 三层协议类型 */
 
 	/* 处理ptype_base上符合的packet_type 
 	 * 根据不同协议来进入不同的钩子函数，重要的有：ip_rcv() arp_rcv()*/

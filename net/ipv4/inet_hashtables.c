@@ -155,7 +155,8 @@ static inline int compute_score(struct sock *sk, struct net *net,
 	if (net_eq(sock_net(sk), net) && inet->num == hnum &&
 			!ipv6_only_sock(sk)) {
 		__be32 rcv_saddr = inet->rcv_saddr;
-		score = sk->sk_family == PF_INET ? 1 : 0; /* 协议一致得1分 */
+		/* 协议一致得1分, 即ipv4的数据包会优先选择ipv4的sock */
+		score = sk->sk_family == PF_INET ? 1 : 0; 
 		if (rcv_saddr) { /* 本地绑定地址匹配，加2分 */
 			if (rcv_saddr != daddr)
 				return -1;

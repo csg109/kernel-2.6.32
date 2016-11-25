@@ -87,7 +87,7 @@ struct iphdr {
 	__u8	ihl:4,
 		version:4;
 #elif defined (__BIG_ENDIAN_BITFIELD)
-	__u8	version:4, 	/* 版本号 */
+	__u8	version:4, 	/* 版本号:4 */
   		ihl:4; 		/* IP首部长度，4字节为单位 */
 #else
 #error	"Please fix <asm/byteorder.h>"

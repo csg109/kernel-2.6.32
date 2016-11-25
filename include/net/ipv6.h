@@ -59,21 +59,22 @@
  *	loopback
  */
 
-#define IPV6_ADDR_ANY		0x0000U
+/* 以下针对ipv6地址类型判断参考函数__ipv6_addr_type()实现 */
+#define IPV6_ADDR_ANY		0x0000U		/* 未指定地址(全0) */
 
-#define IPV6_ADDR_UNICAST      	0x0001U	
-#define IPV6_ADDR_MULTICAST    	0x0002U	
+#define IPV6_ADDR_UNICAST      	0x0001U		/* 单播地址(前3bit非000和111, 或FC和FD开头) */
+#define IPV6_ADDR_MULTICAST    	0x0002U		/* 多播地址(FF开头) */
 
-#define IPV6_ADDR_LOOPBACK	0x0010U
-#define IPV6_ADDR_LINKLOCAL	0x0020U
-#define IPV6_ADDR_SITELOCAL	0x0040U
+#define IPV6_ADDR_LOOPBACK	0x0010U		/* 回环地址(::1/128) */
+#define IPV6_ADDR_LINKLOCAL	0x0020U		/* 链路本地地址(FE80::) */
+#define IPV6_ADDR_SITELOCAL	0x0040U		/* 站点本地地址(FEC0::) */
 
-#define IPV6_ADDR_COMPATv4	0x0080U
+#define IPV6_ADDR_COMPATv4	0x0080U		/* ipv4兼容地址(::w.x.y.z) */
 
 #define IPV6_ADDR_SCOPE_MASK	0x00f0U
 
-#define IPV6_ADDR_MAPPED	0x1000U
-#define IPV6_ADDR_RESERVED	0x2000U	/* reserved address space */
+#define IPV6_ADDR_MAPPED	0x1000U		/* ipv4映射地址(::FFFF:w.x.y.z) */
+#define IPV6_ADDR_RESERVED	0x2000U	/* reserved address space *//* 保留地址 */
 
 /*
  *	Addr scopes
@@ -83,11 +84,11 @@
 	((a)->s6_addr[1] & 0x0f)	/* nonstandard */
 #define __IPV6_ADDR_SCOPE_INVALID	-1
 #endif
-#define IPV6_ADDR_SCOPE_NODELOCAL	0x01
-#define IPV6_ADDR_SCOPE_LINKLOCAL	0x02
-#define IPV6_ADDR_SCOPE_SITELOCAL	0x05
-#define IPV6_ADDR_SCOPE_ORGLOCAL	0x08
-#define IPV6_ADDR_SCOPE_GLOBAL		0x0e
+#define IPV6_ADDR_SCOPE_NODELOCAL	0x01	/* 节点本地*/
+#define IPV6_ADDR_SCOPE_LINKLOCAL	0x02	/* 链路本地 */
+#define IPV6_ADDR_SCOPE_SITELOCAL	0x05	/* 站点本地 */
+#define IPV6_ADDR_SCOPE_ORGLOCAL	0x08	/* 组织本地 */
+#define IPV6_ADDR_SCOPE_GLOBAL		0x0e	/* 全局/全球可达 */
 
 /*
  *	Addr flags
@@ -329,6 +330,7 @@ static inline void ipv6_addr_set(struct in6_addr *addr,
 	addr->s6_addr32[3] = w4;
 }
 
+/* 判断IPV6地址是否相等 */
 static inline int ipv6_addr_equal(const struct in6_addr *a1,
 				  const struct in6_addr *a2)
 {
@@ -344,11 +346,13 @@ static inline int __ipv6_prefix_equal(const __be32 *a1, const __be32 *a2,
 	unsigned pdw, pbi;
 
 	/* check complete u32 in prefix */
+	/* 先比较32bit整数倍是否相等 */
 	pdw = prefixlen >> 5;
 	if (pdw && memcmp(a1, a2, pdw << 2))
 		return 0;
 
 	/* check incomplete u32 in prefix */
+	/* 再比较剩余位数是否相等 */
 	pbi = prefixlen & 0x1f;
 	if (pbi && ((a1[pdw] ^ a2[pdw]) & htonl((0xffffffff) << (32 - pbi))))
 		return 0;
@@ -356,6 +360,7 @@ static inline int __ipv6_prefix_equal(const __be32 *a1, const __be32 *a2,
 	return 1;
 }
 
+/* 比较两个ipv6地址前缀是否相同, prefixlen为前缀位数 */
 static inline int ipv6_prefix_equal(const struct in6_addr *a1,
 				    const struct in6_addr *a2,
 				    unsigned int prefixlen)
@@ -383,18 +388,21 @@ struct ip6_create_arg {
 void ip6_frag_init(struct inet_frag_queue *q, void *a);
 int ip6_frag_match(struct inet_frag_queue *q, void *a);
 
+/* 判断ipv6地址是否全0 */
 static inline int ipv6_addr_any(const struct in6_addr *a)
 {
 	return ((a->s6_addr32[0] | a->s6_addr32[1] | 
 		 a->s6_addr32[2] | a->s6_addr32[3] ) == 0); 
 }
 
+/* 判断ipv6地址是否是回环地址 */
 static inline int ipv6_addr_loopback(const struct in6_addr *a)
 {
 	return ((a->s6_addr32[0] | a->s6_addr32[1] |
 		 a->s6_addr32[2] | (a->s6_addr32[3] ^ htonl(1))) == 0);
 }
 
+/* 判断ipv6地址是否是ipv4映射地址 */
 static inline int ipv6_addr_v4mapped(const struct in6_addr *a)
 {
 	return ((a->s6_addr32[0] | a->s6_addr32[1] |
@@ -411,6 +419,7 @@ static inline int ipv6_addr_orchid(const struct in6_addr *a)
 		== htonl(0x20010010));
 }
 
+/* 设置ipv4的映射地址 */
 static inline void ipv6_addr_set_v4mapped(const __be32 addr,
 					  struct in6_addr *v4mapped)
 {

@@ -150,18 +150,21 @@ struct inet_sock {
 	/* sk and pinet6 has to be the first two members of inet_sock */
 	struct sock		sk;
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-	struct ipv6_pinfo	*pinet6;
+	struct ipv6_pinfo	*pinet6; /* ipv6控制块, 包括ipv6地址等
+					  * ipv6的sock分配的是tcp6_sock
+					  * pinet6成员实际指向的是tcp6_sock->inet6 
+					  */
 #endif
 	/* Socket demultiplex comparisons on incoming packets. */
-	__be32			daddr;
-	__be32			rcv_saddr;
-	__be16			dport;
-	__u16			num;
-	__be32			saddr;
+	__be32			daddr;	   /* 对端ipv4地址, ipv6无效,为LOOPBACK4_IPV6 */
+	__be32			rcv_saddr; /* 本地ipv4(绑定)地址, ipv6无效,为LOOPBACK4_IPV6 */
+	__be16			dport;	   /* 对端端口 */
+	__u16			num;	   /* 本端端口(主机序ntohs后) */
+	__be32			saddr;	   /* 本端ipv4地址, ipv6无效,为LOOPBACK4_IPV6 */
 	__s16			uc_ttl;
 	__u16			cmsg_flags;
 	struct ip_options	*opt;
-	__be16			sport;
+	__be16			sport;	/* 本端端口 */
 	__u16			id;	/* ip首部的id序号ipid, ip_select_ident_more()函数获取并增加 */
 	__u8			tos;
 	__u8			mc_ttl;

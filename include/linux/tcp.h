@@ -296,7 +296,8 @@ struct tcp_sock {
  	u32	snd_una;	/* First byte we want an ack for	*//* 下一个要被ACK的序列号 */
  	u32	snd_sml;	/* Last byte of the most recently transmitted small packet */
 	u32	rcv_tstamp;	/* timestamp of last received ACK (for keepalives) *//* 最后一次接收到ack的时间戳，主要用于keepalive */
-	u32	lsndtime;	/* timestamp of last sent data packet (for restart window) *//* 最后一次发送数据包的时间戳 */
+	u32	lsndtime;	/* timestamp of last sent data packet (for restart window) */
+				/* 最后一次发送数据包的时间戳 */
 
 	/* Data for direct copy to user */
 	struct {

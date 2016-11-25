@@ -97,7 +97,10 @@ struct inet_connection_sock {
 	__u32			  icsk_rto;			/* RTO超时时间 */
 	__u32			  icsk_pmtu_cookie;		/* mtu的值, 从路由缓存获得, 由tcp_sync_mss()维护 */
 	const struct tcp_congestion_ops *icsk_ca_ops;		/* 拥塞控制算法 */
-	const struct inet_connection_sock_af_ops *icsk_af_ops;  /* TCP为ipv4_specific */
+	const struct inet_connection_sock_af_ops *icsk_af_ops;  /* TCP为ipv4_specific (ipv4)
+								 * 或ipv6_specific (ipv6连接)
+								 * 或ipv6_mapped (ipv4的连接ipv6的sock)
+								 */
 	unsigned int		  (*icsk_sync_mss)(struct sock *sk, u32 pmtu);
 	__u8			  icsk_ca_state;	 	/* 拥塞状态，用枚举tcp_ca_state定义 */
 	__u8			  icsk_retransmits;		/* 连续RTO的次数 */

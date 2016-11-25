@@ -126,17 +126,18 @@ static int inline compute_score(struct sock *sk, struct net *net,
 {
 	int score = -1;
 
+	/* NET、本地端口、IPV6协议匹配 */
 	if (net_eq(sock_net(sk), net) && inet_sk(sk)->num == hnum &&
 	    sk->sk_family == PF_INET6) {
 		const struct ipv6_pinfo *np = inet6_sk(sk);
 
 		score = 1;
-		if (!ipv6_addr_any(&np->rcv_saddr)) {
+		if (!ipv6_addr_any(&np->rcv_saddr)) { /* 如果绑定本地地址,则匹配加1分 */
 			if (!ipv6_addr_equal(&np->rcv_saddr, daddr))
 				return -1;
 			score++;
 		}
-		if (sk->sk_bound_dev_if) {
+		if (sk->sk_bound_dev_if) { /* 网卡匹配, 加1分 */
 			if (sk->sk_bound_dev_if != dif)
 				return -1;
 			score++;

@@ -156,12 +156,14 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 	/*
 	 *	connect() to INADDR_ANY means loopback (BSD'ism).
 	 */
-
+	/* connect目标地址为0的话即表示loopback, 最后一位置1 */
 	if(ipv6_addr_any(&usin->sin6_addr))
 		usin->sin6_addr.s6_addr[15] = 0x1;
 
+	/* 判断目的地址类型 */
 	addr_type = ipv6_addr_type(&usin->sin6_addr);
 
+	/* 多播则返回错误 */
 	if(addr_type & IPV6_ADDR_MULTICAST)
 		return -ENETUNREACH;
 
@@ -190,13 +192,14 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		tp->write_seq = 0;
 	}
 
-	ipv6_addr_copy(&np->daddr, &usin->sin6_addr);
+	ipv6_addr_copy(&np->daddr, &usin->sin6_addr); /* 设置目的地址 */
 	np->flow_label = fl.fl6_flowlabel;
 
 	/*
 	 *	TCP over IPv4
 	 */
 
+	/* ipv4映射地址 */
 	if (addr_type == IPV6_ADDR_MAPPED) {
 		u32 exthdrlen = icsk->icsk_ext_hdr_len;
 		struct sockaddr_in sin;
@@ -208,7 +211,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 
 		sin.sin_family = AF_INET;
 		sin.sin_port = usin->sin6_port;
-		sin.sin_addr.s_addr = usin->sin6_addr.s6_addr32[3];
+		sin.sin_addr.s_addr = usin->sin6_addr.s6_addr32[3]; /* ipv4映射时最后32位为ipv4地址 */
 
 		icsk->icsk_af_ops = &ipv6_mapped;
 		sk->sk_backlog_rcv = tcp_v4_do_rcv;
@@ -216,6 +219,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		tp->af_specific = &tcp_sock_ipv6_mapped_specific;
 #endif
 
+		/* 调用ipv4的connect */
 		err = tcp_v4_connect(sk, (struct sockaddr *)&sin, sizeof(sin));
 
 		if (err) {
@@ -227,6 +231,7 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 #endif
 			goto failure;
 		} else {
+			/* 成功后设置ipv4映射地址 */
 			ipv6_addr_set(&np->saddr, 0, 0, htonl(0x0000FFFF),
 				      inet->saddr);
 			ipv6_addr_set(&np->rcv_saddr, 0, 0, htonl(0x0000FFFF),
@@ -1279,18 +1284,22 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	struct tcp_md5sig_key *key;
 #endif
 
+	/* ipv4映射
+	 * 监听的sock是ipv6但数据包是ipv4, 按照ipv4处理 
+	 */
 	if (skb->protocol == htons(ETH_P_IP)) {
 		/*
 		 *	v6 mapped
 		 */
 
+		/* 创建sock,由于监听的sock是ipv6所以sock结构是ipv6的(tcp6_sock) */
 		newsk = tcp_v4_syn_recv_sock(sk, skb, req, dst);
 
 		if (newsk == NULL)
 			return NULL;
 
 		newtcp6sk = (struct tcp6_sock *)newsk;
-		inet_sk(newsk)->pinet6 = &newtcp6sk->inet6;
+		inet_sk(newsk)->pinet6 = &newtcp6sk->inet6; /* 初始化inet_sock->pinet6 */
 
 		newinet = inet_sk(newsk);
 		newnp = inet6_sk(newsk);
@@ -1298,6 +1307,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 
 		memcpy(newnp, np, sizeof(struct ipv6_pinfo));
 
+		/* 设置为ipv4映射地址 */
 		ipv6_addr_set(&newnp->daddr, 0, 0, htonl(0x0000FFFF),
 			      newinet->daddr);
 
@@ -1307,7 +1317,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 		ipv6_addr_copy(&newnp->rcv_saddr, &newnp->saddr);
 
 		inet_csk(newsk)->icsk_af_ops = &ipv6_mapped;
-		newsk->sk_backlog_rcv = tcp_v4_do_rcv;
+		newsk->sk_backlog_rcv = tcp_v4_do_rcv; /* backlog指定为ipv4的 */
 #ifdef CONFIG_TCP_MD5SIG
 		newtp->af_specific = &tcp_sock_ipv6_mapped_specific;
 #endif
@@ -1333,6 +1343,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 		return newsk;
 	}
 
+	/* 这里是真正的ipv6连接 */
 	treq = inet6_rsk(req);
 	opt = np->opt;
 
@@ -1368,6 +1379,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 			goto out;
 	}
 
+	/* 创建ipv6的sock */
 	newsk = tcp_create_openreq_child(sk, req, skb);
 	if (newsk == NULL)
 		goto out_nonewsk;
@@ -1382,7 +1394,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	__ip6_dst_store(newsk, dst, NULL, NULL);
 
 	newtcp6sk = (struct tcp6_sock *)newsk;
-	inet_sk(newsk)->pinet6 = &newtcp6sk->inet6;
+	inet_sk(newsk)->pinet6 = &newtcp6sk->inet6; /* 初始化inet_sock->pinet6 */
 
 	newtp = tcp_sk(newsk);
 	newinet = inet_sk(newsk);
@@ -1445,6 +1457,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 		    tcp_time_stamp - tcp_rsk(req)->snt_synack);
 	newtp->total_retrans = req->retrans;
 
+	/* ipv4的地址都设置为LOOPBACK4_IPV6(127.0.0.6) */
 	newinet->daddr = newinet->saddr = newinet->rcv_saddr = LOOPBACK4_IPV6;
 
 #ifdef CONFIG_TCP_MD5SIG
@@ -1522,7 +1535,11 @@ static int tcp_v6_do_rcv(struct sock *sk, struct sk_buff *skb)
 	   handle them correctly, but it is not case with
 	   tcp_v6_hnd_req and tcp_v6_send_reset().   --ANK
 	 */
-
+	/* 以上的注释解释了：
+	 * 当一个ipv4的数据包被ipv6的sock接收时进入backlog,
+	 * 后续接收backlog队列时调用的是tcp_v6_do_rcv()而不是tcp_v4_do_rcv(),
+	 * 此时就会出现ipv4的数据包进入本函数
+	 */
 	if (skb->protocol == htons(ETH_P_IP))
 		return tcp_v4_do_rcv(sk, skb);
 

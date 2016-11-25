@@ -91,6 +91,11 @@ __u32 secure_ip_id(__be32 daddr)
 	return hash[0];
 }
 
+/* 选择初始seq, 
+ * 通过四元组和随机数计算MD5, 
+ * 再将MD5结果加上系统时间作为最终seq,
+ * 加上时间确保同一个四元组的下一条连接序列号都是递增的
+ */
 __u32 secure_tcp_sequence_number(__be32 saddr, __be32 daddr,
 				 __be16 sport, __be16 dport)
 {
@@ -103,6 +108,10 @@ __u32 secure_tcp_sequence_number(__be32 saddr, __be32 daddr,
 
 	md5_transform(hash, net_secret);
 
+	/* 将MD5结果加上ns/64的时间单位得到结果,
+	 * 确保同一四元组下一条访问seq比上一条大,
+	 * 对端如果处于TIME_WAIT会根据seq来判断是否允许连接
+	 */
 	return seq_scale(hash[0]);
 }
 

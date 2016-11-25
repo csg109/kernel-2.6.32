@@ -1197,7 +1197,9 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 {
 	int err;
 	struct socket *sock;
-	const struct net_proto_family *pf; /* ipv4为inet_family_ops */
+	const struct net_proto_family *pf; /* ipv4为inet_family_ops
+					    * ipv6为inet6_family_ops
+					    */
 
 	/*
 	 *      Check protocol is in range
@@ -1268,7 +1270,7 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	/* Now protected by module ref count */
 	rcu_read_unlock();
 
-	/* pf为inet_family_ops, 这里调用inet_create() */
+	/* pf为inet_family_ops, 这里ipv4调用inet_create(), ipv6调用inet6_create() */
 	err = pf->create(net, sock, protocol, kern);
 	if (err < 0)
 		goto out_module_put;
@@ -1628,8 +1630,9 @@ SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
 	if (err)
 		goto out_put;
 
-	/* SOCKET层的操作函数，如果是SOCK_STREAM，proto_ops为inet_stream_ops， 
-	 * 接下来调用inet_stream_connect()
+	/* SOCKET层的操作函数，如果是SOCK_STREAM,
+	 * ipv4: proto_ops为inet_stream_ops， 接下来调用inet_stream_connect()
+	 * ipv6: proto_ops为inet6_stream_ops， 接下来调用inet_stream_connect()
 	 */
 	err = sock->ops->connect(sock, (struct sockaddr *)&address, addrlen,
 				 sock->file->f_flags);

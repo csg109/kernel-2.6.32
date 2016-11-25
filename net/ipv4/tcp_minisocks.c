@@ -287,7 +287,7 @@ kill:
 	/*
 	 * 这里处理SYN包, 如果SYN包满足:
 	 * 1.PAWS检测通过
-	 * 2.序列号大于上个连接 
+	 * 2.序列号大于上个连接(同一四元组的每条连接seq都是递增的,详见secure_tcp_sequence_number())
 	 *   或者
 	 *   有时间戳并且时间戳在上个连接之后
 	 * 那么就为合法的SYN包,可以建立连接
@@ -744,7 +744,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * ESTABLISHED STATE. If it will be dropped after
 	 * socket is created, wait for troubles.
 	 */
-	/* 调用tcp_v4_syn_recv_sock()创建sock */
+	/* 创建sock,
+	 * ipv4调用tcp_v4_syn_recv_sock()
+	 * ipv6调用tcp_v6_syn_recv_sock()
+	 */
 	child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb, req, NULL);
 	if (child == NULL)
 		goto listen_overflow;

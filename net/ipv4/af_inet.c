@@ -605,7 +605,7 @@ int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 		if (sk->sk_state != TCP_CLOSE)
 			goto out;
 
-		/* 调用tcp_v4_connect() */
+		/* ipv4调用tcp_v4_connect(), ipv6调用tcp_v6_connect() */
 		err = sk->sk_prot->connect(sk, uaddr, addr_len);
 		if (err < 0)
 			goto out;

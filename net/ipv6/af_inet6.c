@@ -239,7 +239,7 @@ lookup_protocol:
 		sk->sk_prot->hash(sk);
 	}
 	if (sk->sk_prot->init) {
-		err = sk->sk_prot->init(sk);
+		err = sk->sk_prot->init(sk); /* µ÷ÓÃtcp_v6_init_sock() */
 		if (err) {
 			sk_common_release(sk);
 			goto out;

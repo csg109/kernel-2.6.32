@@ -229,7 +229,7 @@ struct sock {
 #define sk_reuse		__sk_common.skc_reuse
 #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
 #define sk_bind_node		__sk_common.skc_bind_node
-#define sk_prot			__sk_common.skc_prot	/* TCP ipv4为tcp_prot */
+#define sk_prot			__sk_common.skc_prot	/* TCP ipv4为tcp_prot, ipv6为tcpv6_prot */
 #define sk_net			__sk_common.skc_net
 	kmemcheck_bitfield_begin(flags);
 	unsigned int		sk_shutdown  : 2,
@@ -698,7 +698,11 @@ static inline __must_check int sk_add_backlog(struct sock *sk, struct sk_buff *s
 /* 接收backlog或prequeue中的数据包 */
 static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
-	return sk->sk_backlog_rcv(sk, skb); /* tcp实际调用tcp_v4_do_rcv */
+	/* tcp 
+	 * ipv4调用tcp_v4_do_rcv
+	 * ipv6调用tcp_v6_do_rcv
+	 */
+	return sk->sk_backlog_rcv(sk, skb); 
 }
 
 static inline void sock_rps_reset_flow(const struct sock *sk)

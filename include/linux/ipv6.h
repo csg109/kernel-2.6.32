@@ -104,24 +104,28 @@ struct ipv6_destopt_hao {
  *	are glued to priority now, forming "class".
  */
 
-struct ipv6hdr {
+struct ipv6hdr { /* 固定部分40字节 */
 #if defined(__LITTLE_ENDIAN_BITFIELD)
 	__u8			priority:4,
 				version:4;
 #elif defined(__BIG_ENDIAN_BITFIELD)
-	__u8			version:4,
-				priority:4;
+	__u8			version:4, /* 版本号:6 */
+				priority:4; /* 传输类别(类似ipv4的TOS)
+					     * 有8bit, 还有4bit在flow_lbl中
+					     */
 #else
 #error	"Please fix <asm/byteorder.h>"
 #endif
-	__u8			flow_lbl[3];
+	__u8			flow_lbl[3]; /* 流标签, 20bit, 
+					      * 这里前4bit是接priority
+					      */
 
-	__be16			payload_len;
-	__u8			nexthdr;
-	__u8			hop_limit;
+	__be16			payload_len; /* ipv6的载荷长度, 首部以外的长度(包括扩展首部) */
+	__u8			nexthdr;     /* 指明紧跟IP首部后面的下一个首部的类型 */
+	__u8			hop_limit;   /* TTL */
 
-	struct	in6_addr	saddr;
-	struct	in6_addr	daddr;
+	struct	in6_addr	saddr;	     /* 源地址, 16字节 */
+	struct	in6_addr	daddr;	     /* 目的地址 */
 };
 
 #ifdef __KERNEL__
@@ -287,9 +291,9 @@ struct ipv6_fl_socklist;
  * by using the struct proto->slab_obj_size member. -acme
  */
 struct ipv6_pinfo {
-	struct in6_addr 	saddr;
-	struct in6_addr 	rcv_saddr;
-	struct in6_addr		daddr;
+	struct in6_addr 	saddr;	   /* 本端地址 */
+	struct in6_addr 	rcv_saddr; /* 本地(绑定)地址 */
+	struct in6_addr		daddr;	   /* 对端地址 */
 	struct in6_pktinfo	sticky_pktinfo;
 	struct in6_addr		*daddr_cache;
 #ifdef CONFIG_IPV6_SUBTREES

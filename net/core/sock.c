@@ -1587,7 +1587,9 @@ static void __release_sock(struct sock *sk)
 			struct sk_buff *next = skb->next;
 
 			skb->next = NULL;
-			sk_backlog_rcv(sk, skb); /* 调用tcp_v4_do_rcv()接收skb */
+
+			/* 调用tcp_v4_do_rcv()/tcp_v6_do_rcv()接收skb */
+			sk_backlog_rcv(sk, skb); 
 
 			/*
 			 * We are in process context here with softirqs

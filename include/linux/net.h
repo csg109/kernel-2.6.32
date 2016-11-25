@@ -144,7 +144,10 @@ struct socket {
 
 	struct file		*file;
 	struct sock		*sk;
-	const struct proto_ops	*ops;  /* 如果是SOCK_STREAM，则为 inet_stream_ops */
+	const struct proto_ops	*ops;  /* 如果是SOCK_STREAM，
+					* ipv4为inet_stream_ops 
+					* ipv6为inet6_stream_ops 
+					*/
 };
 
 struct vm_area_struct;

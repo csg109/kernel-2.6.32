@@ -2169,7 +2169,7 @@ extern __sum16 __skb_checksum_complete(struct sk_buff *skb);
 /* 返回1表示该skb已经校验完checksum或者不需要验证L4层checksum(比如本地环回) */
 static inline int skb_csum_unnecessary(const struct sk_buff *skb)
 {
-	return skb->ip_summed & CHECKSUM_UNNCESSARY;
+	return skb->ip_summed & CHECKSUM_UNNECESSARY;
 }
 
 /**
