@@ -1301,24 +1301,27 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	tcp_rsk(req)->af_specific = &tcp_request_sock_ipv4_ops;
 #endif
 
-	tcp_clear_options(&tmp_opt);
+	tcp_clear_options(&tmp_opt); /* 先初始化清零 */
 	tmp_opt.mss_clamp = 536;
 	tmp_opt.user_mss  = tcp_sk(sk)->rx_opt.user_mss;
 
 	tcp_parse_options(skb, &tmp_opt, 0); /* 解析TCP OPTIONS */
 
+	/* 如果使用了syncookie但是没有启用timestamp, 则把sack/wscale关掉
+	 * 因为这些选项需要携带在timestamp中
+	 */
 	if (want_cookie && !tmp_opt.saw_tstamp)
 		tcp_clear_options(&tmp_opt);
 
-	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;
+	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp; /* 设置是否启用了timestamp */
 
-	tcp_openreq_init(req, &tmp_opt, skb);
+	tcp_openreq_init(req, &tmp_opt, skb); /* 根据opt初始化req */
 
 	ireq = inet_rsk(req);
 	ireq->loc_addr = daddr;
 	ireq->rmt_addr = saddr;
 	ireq->no_srccheck = inet_sk(sk)->transparent;
-	ireq->opt = tcp_v4_save_options(sk, skb);
+	ireq->opt = tcp_v4_save_options(sk, skb); /* 保存IP选项 */
 
 	if (security_inet_conn_request(sk, skb, req))
 		goto drop_and_free;
@@ -1329,7 +1332,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (want_cookie) {
 #ifdef CONFIG_SYN_COOKIES
 		syn_flood_warning(skb); /* syn-cookies每分钟报警 */
-		req->cookie_ts = tmp_opt.tstamp_ok;
+		req->cookie_ts = tmp_opt.tstamp_ok; /* 标识支持timestamp携带TCP选项 */
 #endif
 		isn = cookie_v4_init_sequence(sk, skb, &req->mss); /* 计算cookie */
 	} else if (!isn) { /* 如果isn非零，说明在TIME_WAIT状态收到SYN包，

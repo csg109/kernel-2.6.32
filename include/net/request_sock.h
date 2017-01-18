@@ -48,6 +48,7 @@ struct request_sock {
 	u16				mss;	 /* 客户端通告的MSS */
 	u8				retrans; /* 重传SYN-ACK的次数 */
 	u8				cookie_ts; /* syncookie: encode tcpopts in timestamp */
+						/* 置位表示 使用syncooke时如果开启timestamp则把TCP选项携带在timestamp中 */
 	/* The following two fields can be easily recomputed I think -AK */
 	u32				window_clamp; /* window clamp at creation time */
 						      /* 本端的最大通告窗口 */

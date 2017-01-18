@@ -125,13 +125,18 @@ static __u32 check_tcp_syn_cookie(__u32 cookie, __be32 saddr, __be32 daddr,
 	__u32 diff;
 
 	/* Strip away the layers from the cookie */
+	/* 先减去两个固定的值, 现在cookie为 高8位的count和低24位的hash+data */
 	cookie -= cookie_hash(saddr, daddr, sport, dport, 0, 0) + sseq;
 
 	/* Cookie is now reduced to (count * 2^24) ^ (hash % 2^24) */
+	/* 现在高8位为count, 右移24位后得到count, diff为分钟时间差
+	 * ((__u32) - 1 >> COOKIEBITS 为0xff
+	 */
 	diff = (count - (cookie >> COOKIEBITS)) & ((__u32) - 1 >> COOKIEBITS);
-	if (diff >= maxdiff)
+	if (diff >= maxdiff) /* 大于4分钟则无效 */
 		return (__u32)-1;
 
+	/* 低24位减去hash, 则只剩data值返回 */
 	return (cookie -
 		cookie_hash(saddr, daddr, sport, dport, count - diff, 1))
 		& COOKIEMASK;	/* Leaving the data behind */
@@ -167,6 +172,7 @@ __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, __u16 *mssp)
 	int mssind;
 	const __u16 mss = *mssp;
 
+	/* 记录最后使用syncookie的时间戳 */	
 	tcp_synq_overflow(sk);
 
 	/* XXX sort msstab[] by probability?  Binary search? */
@@ -176,6 +182,7 @@ __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, __u16 *mssp)
 
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESSENT);
 
+	/* 计算cookie并携带mss数组下标 */
 	return secure_tcp_syn_cookie(iph->saddr, iph->daddr,
 				     th->source, th->dest, ntohl(th->seq),
 				     jiffies / (HZ * 60), mssind);
@@ -197,6 +204,7 @@ static inline int cookie_check(struct sk_buff *skb, __u32 cookie)
 	const struct iphdr *iph = ip_hdr(skb);
 	const struct tcphdr *th = tcp_hdr(skb);
 	__u32 seq = ntohl(th->seq) - 1;
+	/* 校验cookie返回-1(即无穷大)为失败, 否则返回mss数组下标 */
 	__u32 mssind = check_tcp_syn_cookie(cookie, iph->saddr, iph->daddr,
 					    th->source, th->dest, seq,
 					    jiffies / (HZ * 60),
@@ -212,6 +220,7 @@ static inline struct sock *get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct sock *child;
 
+	/* 调用tcp_v4_syn_recv_sock()创建sock */
 	child = icsk->icsk_af_ops->syn_recv_sock(sk, skb, req, dst);
 	if (child)
 		inet_csk_reqsk_queue_add(sk, req, child);
@@ -269,8 +278,8 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb,
 		goto out;
 
 	/* 这里检查是否合法的ACK */
-	if (tcp_synq_no_recent_overflow(sk) ||
-	    (mss = cookie_check(skb, cookie)) == 0) {
+	if (tcp_synq_no_recent_overflow(sk) || /* 是否最近3秒内使用了syncookie */
+	    (mss = cookie_check(skb, cookie)) == 0) { /* cookie验证 */
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_SYNCOOKIESFAILED);
 		goto out;
 	}
@@ -281,6 +290,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb,
 	memset(&tcp_opt, 0, sizeof(tcp_opt));
 	tcp_parse_options(skb, &tcp_opt, 0);
 
+	/* 解析timestamp里携带的TCP选项 */
 	if (tcp_opt.saw_tstamp)
 		cookie_check_timestamp(&tcp_opt);
 

@@ -286,12 +286,14 @@ static inline int tcp_too_many_orphans(struct sock *sk, int num)
 }
 
 /* syncookies: remember time of last synqueue overflow */
+/* 记录最后使用syncookie的时间戳, 用于在收到ACK时在该时间戳的3秒内才检测携带cookie的ACK */	
 static inline void tcp_synq_overflow(struct sock *sk)
 {
 	tcp_sk(sk)->rx_opt.ts_recent_stamp = jiffies;
 }
 
 /* syncookies: no recent synqueue overflow on this listening socket? */
+/* 在最后使用syncookie的3秒内才需要检测cookie */
 static inline int tcp_synq_no_recent_overflow(const struct sock *sk)
 {
 	unsigned long last_overflow = tcp_sk(sk)->rx_opt.ts_recent_stamp;
@@ -1060,6 +1062,7 @@ static inline int tcp_full_space(const struct sock *sk)
 	return tcp_win_from_space(sk->sk_rcvbuf); 
 }
 
+/* 根据tcp选项rx_opt初始化请求块req */
 static inline void tcp_openreq_init(struct request_sock *req,
 				    struct tcp_options_received *rx_opt,
 				    struct sk_buff *skb)

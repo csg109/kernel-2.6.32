@@ -151,7 +151,7 @@ struct bbr {
 /* Window length of bw filter (in rounds): */
 static const int bbr_bw_rtts = CYCLE_LEN + 2; /* 带宽过滤窗口长度为10个周期 */
 /* Window length of min_rtt filter (in sec): */
-static const u32 bbr_min_rtt_win_sec = 10; /* min_rtt窗口过滤常去, 10秒 */
+static const u32 bbr_min_rtt_win_sec = 10; /* min_rtt窗口过滤长度, 10秒 */
 /* Minimum time (in ms) spent at bbr_cwnd_min_target in BBR_PROBE_RTT mode: */
 static const u32 bbr_probe_rtt_mode_ms = 200; /* PROBE_RTT模式维持在低带宽的最小时间 */
 /* Skip TSO below the following bandwidth (bits/sec): */
@@ -172,7 +172,7 @@ static const int bbr_high_gain  = BBR_UNIT * 2885 / 1000 + 1; /* 含义为2.885倍 *
 /* DRAIN模式pacing rate增长率, 为1/high_gain = 0.336 */
 static const int bbr_drain_gain = BBR_UNIT * 1000 / 2885; /* 为0.336倍 */
 /* The gain for deriving steady-state cwnd tolerates delayed/stretched ACKs: */
-/* PROBE_BW模式cwnddeep增长率为2倍 */
+/* PROBE_BW模式cwnd增长率为2倍 */
 static const int bbr_cwnd_gain  = BBR_UNIT * 2; /* 为2倍 */
 
 /* The pacing_gain values for the PROBE_BW gain cycle, to discover/share bw: */
@@ -1168,7 +1168,7 @@ static void bbr_set_state(struct sock *sk, u8 new_state)
 		struct rate_sample rs = { .losses = 1 };
 
 		bbr->prev_ca_state = TCP_CA_Loss; /* 记录拥塞状态 */
-		bbr->full_bw = 0; /* 将上一次记录带宽清零, 目的是重新判断带宽是否已满 */
+		bbr->full_bw = 0; /* 将上一次记录带宽清零, 因为RTO后带宽有变，重新来判断增长率 */
 		bbr->round_start = 1;	/* treat RTO like end of a round *//* RTO后相当于重新一个RTT周期开始 */
 		bbr_lt_bw_sampling(sk, &rs); /* 判断是否存在LT限速网络 */
 	}

@@ -6284,7 +6284,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 		if (th->syn) {
 			if (th->fin)
 				goto discard;
-			/* 处理syn包，指向tcp_v4_conn_request() */
+			/* 处理syn包，指向tcp_v4_conn_request()/tcp_v6_conn_request() */
 			if (icsk->icsk_af_ops->conn_request(sk, skb) < 0)
 				return 1;
 
