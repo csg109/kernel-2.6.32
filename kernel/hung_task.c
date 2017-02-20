@@ -188,6 +188,7 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 static unsigned long timeout_jiffies(unsigned long timeout)
 {
 	/* timeout of 0 will disable the watchdog */
+	/* 当timeout为0返回最大值, 这样内核线程就一直睡眠相当于关闭hung task */
 	return timeout ? timeout * HZ : MAX_SCHEDULE_TIMEOUT;
 }
 
@@ -224,7 +225,7 @@ static int watchdog(void *dummy)
 		unsigned long timeout = sysctl_hung_task_timeout_secs;
 
 		/* 检测线程(watchdog)sleep 120s(默认)后，再次唤醒 */
-		while (schedule_timeout_interruptible(timeout_jiffies(timeout)))
+		while (schedule_timeout_interruptible(timeout_jiffies(timeout))) /* timeout为0时返回最大值, 即关闭hung task时一直睡眠 */
 			timeout = sysctl_hung_task_timeout_secs;
 
 		/* 醒来后执行实际的检测操作 */
