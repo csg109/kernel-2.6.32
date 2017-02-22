@@ -33,14 +33,14 @@ int __read_mostly softlockup_thresh = 60;
 static DEFINE_PER_CPU(unsigned long, watchdog_touch_ts); /* 用于softlockup的watchdog时间戳, 在每次watchdog线程被调度时被更新 */
 static DEFINE_PER_CPU(struct task_struct *, softlockup_watchdog); /* 用于softlockup的percpu的watchdog线程, 线程函数watchdog() */
 static DEFINE_PER_CPU(struct hrtimer, watchdog_hrtimer); /* 用于softlockup的高精度定时器 */
-static DEFINE_PER_CPU(bool, softlockup_touch_sync);
+static DEFINE_PER_CPU(bool, softlockup_touch_sync); /* 用于softlockup标记本次检测时更新下时钟 */
 static DEFINE_PER_CPU(bool, soft_watchdog_warn); /* 用于softlockup, 用来控制每次软锁时每个CPU只打印一次报警信息 */
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
-static DEFINE_PER_CPU(bool, hard_watchdog_warn);
-static DEFINE_PER_CPU(bool, watchdog_nmi_touch);
-static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts);
-static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved);
-static DEFINE_PER_CPU(struct perf_event *, watchdog_ev);
+static DEFINE_PER_CPU(bool, hard_watchdog_warn); /* 用于hardlockup控制每次硬锁每个CPU只打印一次报警信息 */
+static DEFINE_PER_CPU(bool, watchdog_nmi_touch); /* 用于hardlockup, 标记本次NMI中断不检测hardlockup */
+static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts); /* 用于hardlockup判断是否硬锁, 在每次高精度定时器触发时自增, NMI中断里检测是否发生变化 */
+static DEFINE_PER_CPU(unsigned long, hrtimer_interrupts_saved); /* 用于hardlockup在每次NMI中断时记录hrtimer_interrupts值来判断该值有无增加 */
+static DEFINE_PER_CPU(struct perf_event *, watchdog_ev); /* 用于hardlockup的perf event, 触发NMI中断 */
 #endif
 
 /* boot commands */
@@ -53,10 +53,13 @@ static int hardlockup_panic =
 static int hardlockup_enable = 
 			CONFIG_BOOTPARAM_HARDLOCKUP_ENABLED_VALUE;
 
+/* 这里控制内核启动参数nmi_watchdog= */
 static int __init hardlockup_panic_setup(char *str)
 {
+	/* nmi_watchdog=panic参数, hardlockup时panic */
 	if (!strncmp(str, "panic", 5))
 		hardlockup_panic = 1;
+	/* nmi_watchdog=nopanic参数, hardlockup时只是警告, 不会panic */
 	else if (!strncmp(str, "nopanic", 7))
 		hardlockup_panic = 0;
 	else if (!strncmp(str, "0", 1))
@@ -134,6 +137,9 @@ static void __touch_watchdog(void)
 	__get_cpu_var(watchdog_touch_ts) = get_timestamp(this_cpu);
 }
 
+/* 用于屏蔽本次softlockup检测
+ * 清除watchdog_touch_ts以便屏蔽掉本次softlockup
+ */
 void touch_softlockup_watchdog(void)
 {
 	__raw_get_cpu_var(watchdog_touch_ts) = 0;
@@ -154,11 +160,20 @@ void touch_all_softlockup_watchdogs(void)
 }
 
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
+/* 用于手动屏蔽掉watchdog的检测:
+ * 在watchdog检测狗咬的时候，看到这个标记，就不再继续监测是否喂过狗了，直接返回
+ * 比如硬狗：设置了watchdog_nmi_touch变量；软狗：清除了watchdog_touch_ts计数.
+ *
+ * 主要用在当内核在处理某些特殊任务的时候，不希望受到这只狗的打扰，
+ * 能自我保证当前系统的状态是正常或异常的（也就是处于自知的状态）；
+ * 查看它的调用, 如：kdb_bt(kgdb单步调试中)和panic(panic time大于零时的循环等待中)等 
+ */
 void touch_nmi_watchdog(void)
 {
 	if (watchdog_enabled) {
 		unsigned cpu;
 
+		/* 针对hardlockup设置watchdog_nmi_touch标记,下一次hardlockup就不检测了 */
 		for_each_present_cpu(cpu) {
 			if (per_cpu(watchdog_nmi_touch, cpu) != true)
 				per_cpu(watchdog_nmi_touch, cpu) = true;
@@ -172,19 +187,24 @@ EXPORT_SYMBOL(touch_nmi_watchdog);
 
 void touch_softlockup_watchdog_sync(void)
 {
-	__raw_get_cpu_var(softlockup_touch_sync) = true;
-	__raw_get_cpu_var(watchdog_touch_ts) = 0;
+	__raw_get_cpu_var(softlockup_touch_sync) = true; /* 需要更新时钟 */
+	__raw_get_cpu_var(watchdog_touch_ts) = 0; /* 屏蔽本次softlockup检测 */
 }
 
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
 /* watchdog detector functions */
+/* 判断是否发生hard lockup */
 static int is_hardlockup(void)
 {
+	/* 获取高精度watchdog timer的运行次数 */
 	unsigned long hrint = __get_cpu_var(hrtimer_interrupts);
-
+	/* 在一个hard lockup检测时间阈值内(NMI触发间隔60秒)，
+	 * 如果watchdog timer未运行,说明cpu中断被屏蔽时间超过阈值 
+	 * 则认为发生了hardlockup
+	 */
 	if (__get_cpu_var(hrtimer_interrupts_saved) == hrint)
 		return 1;
-
+	/* 记录watchdog timer运行的次数 */
 	__get_cpu_var(hrtimer_interrupts_saved) = hrint;
 	return 0;
 }
@@ -216,6 +236,9 @@ static struct perf_event_attr wd_hw_attr = {
 };
 
 /* Callback function for perf event subsystem */
+/* hardlockup检测事件发生时的NMI回调函数, 每60秒触发NMI中断时调用
+ * 用于判断是否发生了hard lockup并dump hard lockup信息
+ */
 static void watchdog_overflow_callback(struct perf_event *event, int nmi,
 		 struct perf_sample_data *data,
 		 struct pt_regs *regs)
@@ -223,8 +246,9 @@ static void watchdog_overflow_callback(struct perf_event *event, int nmi,
 	/* Ensure the watchdog never gets throttled */
 	event->hw.interrupts = 0;
 
+	/* 其他地方调用了touch_nmi_watchdog(调用地方自己确保不发生硬锁), 本次不检测hardlockup */
 	if (__get_cpu_var(watchdog_nmi_touch) == true) {
-		__get_cpu_var(watchdog_nmi_touch) = false;
+		__get_cpu_var(watchdog_nmi_touch) = false; /* 置位, 下一次还是需要检测的 */
 		return;
 	}
 
@@ -234,16 +258,20 @@ static void watchdog_overflow_callback(struct perf_event *event, int nmi,
 	 * fired multiple times before we overflow'd.  If it hasn't
 	 * then this is a good indication the cpu is stuck
 	 */
-	if (is_hardlockup()) {
+	if (is_hardlockup()) { /* 判断是否发生hardlockup */
 		int this_cpu = smp_processor_id();
 
 		/* only print hardlockups once */
+		/* hard_watchdog_warn控制每次每个CPU只打印一次警告 */
 		if (__get_cpu_var(hard_watchdog_warn) == true)
 			return;
-
-		if (hardlockup_panic)
+		/* 是否直接panic
+		 * hardlockup_panic是CONFIG配置的,默认为1, 没有导出到proc参数
+		 * 可以通过内核启动参数nmi_watchdog=panic 或 = nopanic控制
+		 */
+		if (hardlockup_panic) 
 			panic("Watchdog detected hard LOCKUP on cpu %d", this_cpu);
-		else
+		else /* 只是警告 */
 			WARN(1, "Watchdog detected hard LOCKUP on cpu %d", this_cpu);
 
 		__get_cpu_var(hard_watchdog_warn) = true;
@@ -253,6 +281,8 @@ static void watchdog_overflow_callback(struct perf_event *event, int nmi,
 	__get_cpu_var(hard_watchdog_warn) = false;
 	return;
 }
+
+/* 增加定时器触发次数, 用于hardlockup判断是否发生硬锁(NMI中断检测定时器未触发) */
 static void watchdog_interrupt_count(void)
 {
 	__get_cpu_var(hrtimer_interrupts)++;
@@ -262,7 +292,10 @@ static inline void watchdog_interrupt_count(void) { return; }
 #endif /* CONFIG_HARDLOCKUP_DETECTOR */
 
 /* watchdog kicker functions */
-/* 高精度定时器处理函数，用来唤醒watchdog进程并判断是否发生了软锁 */
+/* 高精度定时器处理函数，
+ * hardlockup用来喂狗
+ * softlockup判断狗咬：唤醒watchdog进程并判断是否发生了软锁 
+ */
 static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 {
 	/* 获取计数watchdog_touch_ts(单位秒)，该计数在watchdog内核线程被调度时更新 */
@@ -271,7 +304,7 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 	int duration;
 
 	/* kick the hardlockup detector */
-	/* 增加中断计数，证明没有发生硬锁(关中断死锁) */
+	/* 增加定时器触发次数, 用于hardlockup判断是否发生硬锁(NMI中断检测定时器未触发) */
 	watchdog_interrupt_count();
 
 	/* kick the softlockup detector */
@@ -282,16 +315,18 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 	/* 重启定时器 */
 	hrtimer_forward_now(hrtimer, ns_to_ktime(get_sample_period()));
 
-	if (touch_ts == 0) { /* 时间戳恰好为0时不进行判断 */
+	/* 为0时本次不检测, 因为其他地方调用了touch_softlockup_watchdog暂时屏蔽掉softlockup */
+	if (touch_ts == 0) {
+		/* 如果设置softlockup_touch_sync则同步更新下时钟 */
 		if (unlikely(__get_cpu_var(softlockup_touch_sync))) {
 			/*
 			 * If the time stamp was touched atomically
 			 * make sure the scheduler tick is up to date.
 			 */
 			__get_cpu_var(softlockup_touch_sync) = false;
-			sched_clock_tick();
+			sched_clock_tick(); /* 更新下时钟 */
 		}
-		__touch_watchdog();
+		__touch_watchdog(); /* 下次还是需要继续检测的 */
 		return HRTIMER_RESTART;
 	}
 
@@ -365,7 +400,7 @@ static int watchdog(void *unused)
 		if (kthread_should_stop())
 			break;
 
-		set_current_state(TASK_INTERRUPTIBLE); /* 睡眠状态等待定时器里唤醒 */
+		set_current_state(TASK_INTERRUPTIBLE); /* 切换睡眠状态在schedule()后等待定时器里唤醒 */
 	}
 	__set_current_state(TASK_RUNNING);
 
@@ -374,6 +409,13 @@ static int watchdog(void *unused)
 
 
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
+/* 开启hard lockup探测
+ * 1.初始化hard lockup检测事件
+ * 2.hard lockup阈值为60s
+ * 2.向performance monitoring子系统注册hard lockup检测事件
+ * 3.使能hard lockup检测事件
+ * 注：performance monitoring，x86中的硬件设备，当cpu clock经过了指定个周期后发出一个NMI中断。
+ */
 static int watchdog_nmi_enable(int cpu)
 {
 	struct perf_event_attr *wd_attr;
@@ -399,9 +441,13 @@ static int watchdog_nmi_enable(int cpu)
 		goto out_enable;
 
 	wd_attr = &wd_hw_attr;
+	/* hardlockup的NMI触发频率为60秒 */
 	wd_attr->sample_period = hw_nmi_get_sample_period();
 
 	/* Try to register using hardware perf events */
+	/* 向performance monitoring注册hard lockup检测事件
+	 * 60秒的频率触发NMI中断后调用watchdog_overflow_callback检测hardlockup
+	 */
 	event = perf_event_create_kernel_counter(wd_attr, cpu, NULL, watchdog_overflow_callback, NULL);
 
 	/* save cpu0 error for future comparison */
@@ -432,20 +478,27 @@ static int watchdog_nmi_enable(int cpu)
 out_save:
 	per_cpu(watchdog_ev, cpu) = event;
 out_enable:
-	perf_event_enable(per_cpu(watchdog_ev, cpu));
+	perf_event_enable(per_cpu(watchdog_ev, cpu)); /* 使能hard lockup的检测 */
 out:
 	return 0;
 }
 
+/* 关闭hard lockup检测机制
+ * 1.向performance monitoring子系统注销hard lockup检测控制块
+ * 2.清空per-cpu hard lockup检测控制块
+ * 3.释放hard lock检测控制块
+ */
 static void watchdog_nmi_disable(int cpu)
 {
 	struct perf_event *event = per_cpu(watchdog_ev, cpu);
 
 	if (event) {
+		/* 向performance monitoring子系统注销hard lockup检测控制块 */
 		perf_event_disable(event);
 		per_cpu(watchdog_ev, cpu) = NULL;
 
 		/* should be in cleanup, but blocks oprofile */
+		/* 释放hard lock检测控制块 */
 		perf_event_release_kernel(event);
 	}
 	return;
@@ -468,13 +521,17 @@ static int watchdog_prepare_cpu(int cpu)
 	return 0;
 }
 
-/* 这里初始化nmi_watchdog 以及用于softlockup的单个CPU的watchdog线程 */
+/* 这里初始化nmi_watchdog以及用于softlockup的单个CPU的watchdog线程 */
 static int watchdog_enable(int cpu)
 {
 	struct task_struct *p = per_cpu(softlockup_watchdog, cpu);
 	int err = 0;
 
 	/* enable the perf event */
+	/* 启用nmi_watchdog, 
+	 * 通过perf系统来实现NMI中断, 
+	 * 相当注册了60秒频率的NMI中断处理函数watchdog_overflow_callback()
+	 */
 	err = watchdog_nmi_enable(cpu);
 
 	/* Regardless of err above, fall through and start softlockup */
@@ -512,7 +569,7 @@ static void watchdog_disable(int cpu)
 	hrtimer_cancel(hrtimer); /* 删除高精度定时器 */
 
 	/* disable the perf event */
-	watchdog_nmi_disable(cpu);
+	watchdog_nmi_disable(cpu); /* 关闭hardlockup检测 */
 
 	/* stop the watchdog thread */
 	/* 关掉watchdog线程 */
@@ -522,6 +579,7 @@ static void watchdog_disable(int cpu)
 	}
 }
 
+/* 启用所有CPU的watchdog, 包括softlockup和hardlockup(nmi_watchdog) */
 static void watchdog_enable_all_cpus(void)
 {
 	int cpu;
@@ -530,7 +588,7 @@ static void watchdog_enable_all_cpus(void)
 
 #ifdef CONFIG_HARDLOCKUP_DETECTOR
 	/* user is explicitly enabling this */
-	hardlockup_enable = 1;
+	hardlockup_enable = 1; /* 启用硬锁检测nmi_watchdog */
 #endif
 	for_each_online_cpu(cpu)
 		if (!watchdog_enable(cpu))
@@ -629,6 +687,7 @@ static struct notifier_block __cpuinitdata cpu_nfb = {
 	.notifier_call = cpu_callback
 };
 
+/* 因为是在启动的时候调用, 这里只初始化一个CPU, 其余CPU通过注册cpu notifier初始化 */
 void __init lockup_detector_init(void)
 {
 	void *cpu = (void *)(long)smp_processor_id();

@@ -930,7 +930,7 @@ static int __init kernel_init(void * unused)
 
 	do_pre_smp_initcalls();
 	start_boot_trace();
-	lockup_detector_init();
+	lockup_detector_init(); /* 初始化用于nmi_watchdog(硬锁)和softlockup(软锁)的检测 */
 
 	smp_init();
 	sched_init_smp();

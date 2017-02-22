@@ -501,7 +501,10 @@ static notrace __kprobes void default_do_nmi(struct pt_regs *regs)
 							== NOTIFY_STOP)
 			return;
 
-#ifndef CONFIG_LOCKUP_DETECTOR
+#ifndef CONFIG_LOCKUP_DETECTOR 
+		/* 注意这里没启用CONFIG_LOCKUP_DETECTOR时才会调用nmi_watchdog_tick()
+		 * 否则是使用kernel/watchdog.c的hardlockup检测硬锁的
+		 */
 		/*
 		 * Ok, so this is none of the documented NMI sources,
 		 * so it must be the NMI watchdog.

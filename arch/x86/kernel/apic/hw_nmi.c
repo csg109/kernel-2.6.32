@@ -17,6 +17,7 @@
 #include <linux/nmi.h>
 #include <linux/module.h>
 
+/* 换算hard lockup检测周期到cpu频率, 60秒 */
 u64 hw_nmi_get_sample_period(void)
 {
 	return (u64)(cpu_khz) * 1000 * 60;
