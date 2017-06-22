@@ -239,9 +239,9 @@ struct tcp_options_received {
 	u8	num_sacks;	/* Number of SACK blocks		*/
 				/* 需要回复的SACK段数, 具体段保存在tp->selective_acks中 */
 	u16	user_mss;  	/* mss requested by user in ioctl */
-				/* 用户设置的最大MSS */
+				/* 用户设置的最大MSS(setsockopt(TCP_MAXSEG)) */
 	u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
-				/* syn包收到的MSS大小, 如果比user_mss大，则置为user_mss
+				/* syn包收到的MSS大小与user_mss的小者
 				 * mss_clamp和user_mss都是不考虑TCP选项的
 				 */
 };
@@ -486,9 +486,9 @@ struct tcp_sock {
 
 /* TCP-specific MTU probe information. */
 	struct {
-		u32		  probe_seq_start;
-		u32		  probe_seq_end;
-	} mtu_probe;
+		u32		  probe_seq_start; /* 探测包的起始seq */
+		u32		  probe_seq_end;   /* 探测包的结束seq */
+	} mtu_probe; /* 用于mtu probe */
 
 #ifdef CONFIG_TCP_MD5SIG
 /* TCP AF-Specific parts; only used by MD5 Signature support so far */

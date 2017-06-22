@@ -1686,13 +1686,13 @@ unsigned short ip_rt_frag_needed(struct net *net, struct iphdr *iph,
 
 static void ip_rt_update_pmtu(struct dst_entry *dst, u32 mtu)
 {
-	if (dst_mtu(dst) > mtu && mtu >= 68 &&
+	if (dst_mtu(dst) > mtu && mtu >= 68 && /* mtu变小了 */
 	    !(dst_metric_locked(dst, RTAX_MTU))) {
-		if (mtu < ip_rt_min_pmtu) {
+		if (mtu < ip_rt_min_pmtu) { /* 最小值 */
 			mtu = ip_rt_min_pmtu;
 			dst->metrics[RTAX_LOCK-1] |= (1 << RTAX_MTU);
 		}
-		dst->metrics[RTAX_MTU-1] = mtu;
+		dst->metrics[RTAX_MTU-1] = mtu; /* 记录MTU */
 		dst_set_expires(dst, ip_rt_mtu_expires);
 		call_netevent_notifiers(NETEVENT_PMTU_UPDATE, dst);
 	}

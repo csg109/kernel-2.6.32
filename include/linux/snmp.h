@@ -117,11 +117,11 @@ enum
 	TCP_MIB_RTOMIN,				/* RtoMin */
 	TCP_MIB_RTOMAX,				/* RtoMax */
 	TCP_MIB_MAXCONN,			/* MaxConn */
-	TCP_MIB_ACTIVEOPENS,			/* ActiveOpens */
-	TCP_MIB_PASSIVEOPENS,			/* PassiveOpens */
-	TCP_MIB_ATTEMPTFAILS,			/* AttemptFails */
-	TCP_MIB_ESTABRESETS,			/* EstabResets */
-	TCP_MIB_CURRESTAB,			/* CurrEstab */
+	TCP_MIB_ACTIVEOPENS,			/* ActiveOpens *//* 主动连接计数 */
+	TCP_MIB_PASSIVEOPENS,			/* PassiveOpens *//* 被动连接计数 */
+	TCP_MIB_ATTEMPTFAILS,			/* AttemptFails *//* 连接失败计数 */
+	TCP_MIB_ESTABRESETS,			/* EstabResets *//* 连接结束计数 */
+	TCP_MIB_CURRESTAB,			/* CurrEstab *//* 当前ESTABLISH连接数 */
 	TCP_MIB_INSEGS,				/* InSegs */
 	TCP_MIB_OUTSEGS,			/* OutSegs */
 	TCP_MIB_RETRANSSEGS,			/* RetransSegs */

@@ -156,11 +156,11 @@ struct inet_sock {
 					  */
 #endif
 	/* Socket demultiplex comparisons on incoming packets. */
-	__be32			daddr;	   /* 对端ipv4地址, ipv6无效,为LOOPBACK4_IPV6 */
-	__be32			rcv_saddr; /* 本地ipv4(绑定)地址, ipv6无效,为LOOPBACK4_IPV6 */
+	__be32			daddr;	   /* 对端ipv4地址(或ipv4映射地址); ipv6无效,为LOOPBACK4_IPV6 */
+	__be32			rcv_saddr; /* 本地ipv4(绑定)地址(或ipv4映射地址); ipv6无效,为LOOPBACK4_IPV6 */
 	__be16			dport;	   /* 对端端口 */
 	__u16			num;	   /* 本端端口(主机序ntohs后) */
-	__be32			saddr;	   /* 本端ipv4地址, ipv6无效,为LOOPBACK4_IPV6 */
+	__be32			saddr;	   /* 本端ipv4地址(或ipv4映射地址), ipv6无效,为LOOPBACK4_IPV6 */
 	__s16			uc_ttl;
 	__u16			cmsg_flags;
 	struct ip_options	*opt;

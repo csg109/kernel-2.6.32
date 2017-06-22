@@ -1031,6 +1031,7 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 }
 
 /* Calculate MSS. Not accounting for SACKs here.  */
+/* 将MTU转成MSS大小, 即减去IP头和TCP头大小, 但是没减去动态的SACK段大小 */
 int tcp_mtu_to_mss(struct sock *sk, int pmtu)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1040,26 +1041,32 @@ int tcp_mtu_to_mss(struct sock *sk, int pmtu)
 	/* Calculate base mss without TCP options:
 	   It is MMS_S - sizeof(tcphdr) of rfc1122
 	 */
+	/* mss = mtu - IP头大小 - TCP头大小 */
 	mss_now = pmtu - icsk->icsk_af_ops->net_header_len - sizeof(struct tcphdr);
 
 	/* Clamp it (mss_clamp does not include tcp options) */
+	/* 如果比SYN包中的MSS大则去SYN包的大小 */
 	if (mss_now > tp->rx_opt.mss_clamp)
 		mss_now = tp->rx_opt.mss_clamp;
 
 	/* Now subtract optional transport overhead */
+	/* 再减去IP头选项大小 */
 	mss_now -= icsk->icsk_ext_hdr_len;
 
 	/* Then reserve room for full set of TCP options and 8 bytes of data */
+	/* MSS不能小于48 */
 	if (mss_now < 48)
 		mss_now = 48;
 
 	/* Now subtract TCP options size, not including SACKs */
+	/* 再减去TCP头固定的选项大小 */
 	mss_now -= tp->tcp_header_len - sizeof(struct tcphdr);
 
 	return mss_now;
 }
 
 /* Inverse of above */
+/* 将mss转成mtu, 即mss+ip头+tcp头*/
 int tcp_mss_to_mtu(struct sock *sk, int mss)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1067,9 +1074,9 @@ int tcp_mss_to_mtu(struct sock *sk, int mss)
 	int mtu;
 
 	mtu = mss +
-	      tp->tcp_header_len +
-	      icsk->icsk_ext_hdr_len +
-	      icsk->icsk_af_ops->net_header_len;
+	      tp->tcp_header_len + /* 固定TCP头 */
+	      icsk->icsk_ext_hdr_len + /* IP头选项 */
+	      icsk->icsk_af_ops->net_header_len; /* 固定IP头 */
 
 	return mtu;
 }
@@ -1080,9 +1087,11 @@ void tcp_mtup_init(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
-	icsk->icsk_mtup.enabled = sysctl_tcp_mtu_probing > 1;
+	icsk->icsk_mtup.enabled = sysctl_tcp_mtu_probing > 1; /* 大于1表示直接启用mtu探测 */
+	/* search_high为mtu, 即mss+tcp头+ip头 */
 	icsk->icsk_mtup.search_high = tp->rx_opt.mss_clamp + sizeof(struct tcphdr) +
 			       icsk->icsk_af_ops->net_header_len;
+	/* search_low为mss512对应mtu */
 	icsk->icsk_mtup.search_low = tcp_mss_to_mtu(sk, sysctl_tcp_base_mss);
 	icsk->icsk_mtup.probe_size = 0;
 }
@@ -1109,23 +1118,25 @@ void tcp_mtup_init(struct sock *sk)
    NOTE2. inet_csk(sk)->icsk_pmtu_cookie and tp->mss_cache
    are READ ONLY outside this function.		--ANK (980731)
  */
+/* 通过MTU维护MSS: tp->mss_cache */
 unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	int mss_now;
 
+	/* mtu变小了, search_high也要相应变小 */
 	if (icsk->icsk_mtup.search_high > pmtu)
 		icsk->icsk_mtup.search_high = pmtu;
 
-	mss_now = tcp_mtu_to_mss(sk, pmtu);
-	mss_now = tcp_bound_to_half_wnd(tp, mss_now);
+	mss_now = tcp_mtu_to_mss(sk, pmtu); /* 将MTU转成MSS */
+	mss_now = tcp_bound_to_half_wnd(tp, mss_now); /* 如果大于接收窗口一半则为接收窗口一半 */
 
 	/* And store cached results */
-	icsk->icsk_pmtu_cookie = pmtu;
+	icsk->icsk_pmtu_cookie = pmtu; /* 保存MTU值, 该变量只有这里维护 */
 	if (icsk->icsk_mtup.enabled)
 		mss_now = min(mss_now, tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_low));
-	tp->mss_cache = mss_now;
+	tp->mss_cache = mss_now; /* 保存tp->mss_cache, 该变量只有这里维护 */
 
 	return mss_now;
 }
@@ -1133,6 +1144,7 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
 /* Compute the current effective MSS, taking SACKs and IP options,
  * and even PMTU discovery events into account.
  */
+/* 返回当前的MSS大小, 且减去了当前需要发送的TCP选项大小 */
 unsigned int tcp_current_mss(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -1142,26 +1154,31 @@ unsigned int tcp_current_mss(struct sock *sk)
 	struct tcp_out_options opts;
 	struct tcp_md5sig_key *md5;
 
-	mss_now = tp->mss_cache;
+	mss_now = tp->mss_cache; /* 当前静态MSS大小(未考虑SACK段等动态大小) */
 
 	if (dst) {
-		u32 mtu = dst_mtu(dst);
+		u32 mtu = dst_mtu(dst); /* 从路由缓存获取MTU大小 */
+		/* 如果MTU变了, 那么MSS也需要跟着改变, tcp_sync_mss()会维护tp->mss_cache */
 		if (mtu != inet_csk(sk)->icsk_pmtu_cookie)
 			mss_now = tcp_sync_mss(sk, mtu);
 	}
 
-	header_len = tcp_established_options(sk, NULL, &opts, &md5) +
-		     sizeof(struct tcphdr);
+	/* header_len为TCP首部大小(包括选项)*/
+	header_len = tcp_established_options(sk, NULL, &opts, &md5) + /* 返回TCP选项大小 */
+		     sizeof(struct tcphdr); /* 再加上基础首部大小 */
 	/* The mss_cache is sized based on tp->tcp_header_len, which assumes
 	 * some common options. If this is an odd packet (because we have SACK
 	 * blocks etc) then our calculated header_len will be different, and
 	 * we have to adjust mss_now correspondingly */
+	/* tp->tcp_header_len为TCP固定首部大小(包括固定选项如timestamp) 
+	 * 不相等说明此时需要发送SACK段, 所以mss需要再减去TCP选项多出的大小
+	 */
 	if (header_len != tp->tcp_header_len) {
 		int delta = (int) header_len - tp->tcp_header_len;
 		mss_now -= delta;
 	}
 
-	return mss_now;
+	return mss_now; /* 返回当前的MSS */
 }
 
 /* Congestion window validation. (RFC2861) */
@@ -1510,16 +1527,16 @@ static int tcp_mtu_probe(struct sock *sk)
 	 * not in recovery,
 	 * have enough cwnd, and
 	 * not SACKing (the variable headers throw things off) */
-	if (!icsk->icsk_mtup.enabled ||
-	    icsk->icsk_mtup.probe_size ||
-	    inet_csk(sk)->icsk_ca_state != TCP_CA_Open ||
-	    tp->snd_cwnd < 11 ||
-	    tp->rx_opt.num_sacks || tp->rx_opt.dsack)
+	if (!icsk->icsk_mtup.enabled ||	/* 没有启用MTU探测 */
+	    icsk->icsk_mtup.probe_size || /* 已经正在进行PMTU探测 */
+	    inet_csk(sk)->icsk_ca_state != TCP_CA_Open || /* 非OPEN状态不使用 */
+	    tp->snd_cwnd < 11 || /* 窗口太小也不使用 */
+	    tp->rx_opt.num_sacks || tp->rx_opt.dsack) /* 需要发送SACK/DSACK时也不使用 */
 		return -1;
 
 	/* Very simple search strategy: just double the MSS. */
-	mss_now = tcp_current_mss(sk);
-	probe_size = 2 * tp->mss_cache;
+	mss_now = tcp_current_mss(sk); /* 得到当前MSS */
+	probe_size = 2 * tp->mss_cache; /* 设置探测包大小为当前MSS的两倍 */
 	size_needed = probe_size + (tp->reordering + 1) * tp->mss_cache;
 	if (probe_size > tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_high)) {
 		/* TODO: set timer for probe_converge_event */
@@ -1527,30 +1544,39 @@ static int tcp_mtu_probe(struct sock *sk)
 	}
 
 	/* Have enough data in the send queue to probe? */
+	/* 需要至少还有size_needed的数据未发送 */
 	if (tp->write_seq - tp->snd_nxt < size_needed)
 		return -1;
 
+	/* 接收窗口需要至少size_needed */
 	if (tp->snd_wnd < size_needed)
 		return -1;
+	/* 如果size_needed数据因为接收窗口占用了不能马上发送，则等待 */
 	if (after(tp->snd_nxt + size_needed, tcp_wnd_end(tp)))
 		return 0;
 
 	/* Do we need to wait to drain cwnd? With none in flight, don't stall */
+	/* 如果inflight将近发满cwnd, 则等待 */
 	if (tcp_packets_in_flight(tp) + 2 > tp->snd_cwnd) {
-		if (!tcp_packets_in_flight(tp))
+		if (!tcp_packets_in_flight(tp)) /* inflight为0时不探测 */
 			return -1;
 		else
-			return 0;
+			return 0; /* 等待 */
 	}
 
+	/* 到了这里可以发送mtu探测包了 */
+
 	/* We're allowed to probe.  Build it now. */
+	/* 首先申请了probe_size的skb */
 	if ((nskb = sk_stream_alloc_skb(sk, probe_size, GFP_ATOMIC)) == NULL)
 		return -1;
+	/* 增加sk使用的写缓存 */
 	sk->sk_wmem_queued += nskb->truesize;
 	sk_mem_charge(sk, nskb->truesize);
 
-	skb = tcp_send_head(sk);
+	skb = tcp_send_head(sk); /* 取出待发送的skb */
 
+	/* 初始化seq等 */
 	TCP_SKB_CB(nskb)->seq = TCP_SKB_CB(skb)->seq;
 	TCP_SKB_CB(nskb)->end_seq = TCP_SKB_CB(skb)->seq + probe_size;
 	TCP_SKB_CB(nskb)->flags = TCPCB_FLAG_ACK;
@@ -1558,55 +1584,65 @@ static int tcp_mtu_probe(struct sock *sk)
 	nskb->csum = 0;
 	nskb->ip_summed = skb->ip_summed;
 
-	tcp_insert_write_queue_before(nskb, skb, sk);
+	tcp_insert_write_queue_before(nskb, skb, sk); /* 将新的skb插入到待发送的前面 */
 
 	len = 0;
+	/* 这里从skb开始拷贝probe_size的数据到nskb, 并释放被拷贝的skb */
 	tcp_for_write_queue_from_safe(skb, next, sk) {
-		copy = min_t(int, skb->len, probe_size - len);
-		if (nskb->ip_summed)
+		copy = min_t(int, skb->len, probe_size - len); /* 拷贝的长度 */
+		if (nskb->ip_summed) /* 如果网卡计算checksum就直接拷贝 */
 			skb_copy_bits(skb, 0, skb_put(nskb, copy), copy);
-		else
+		else /* 否则边拷贝边计算checksum到nskb->csum中 */
 			nskb->csum = skb_copy_and_csum_bits(skb, 0,
 							    skb_put(nskb, copy),
 							    copy, nskb->csum);
 
-		if (skb->len <= copy) {
+		if (skb->len <= copy) { /* 该skb数据全部被拷贝了, 删掉skb */
 			/* We've eaten all the data from this skb.
 			 * Throw it away. */
 			TCP_SKB_CB(nskb)->flags |= TCP_SKB_CB(skb)->flags;
 			tcp_unlink_write_queue(skb, sk);
 			sk_wmem_free_skb(sk, skb);
-		} else {
+		} else { /* skb还有数据, 那么就得截掉被拷贝的copy长度 */
+			/* 复制flags, 除了FIN和PSH标志 */
 			TCP_SKB_CB(nskb)->flags |= TCP_SKB_CB(skb)->flags &
 						   ~(TCPCB_FLAG_FIN|TCPCB_FLAG_PSH);
+			/* 如果skb没有分页,那么直接调整线性区即可, 并重新计算checksum */
 			if (!skb_shinfo(skb)->nr_frags) {
 				skb_pull(skb, copy);
 				if (skb->ip_summed != CHECKSUM_PARTIAL)
 					skb->csum = csum_partial(skb->data,
 								 skb->len, 0);
-			} else {
+			} else { /* 否则截掉copy的长度, 重新设置tso_segs */
 				__pskb_trim_head(skb, copy);
 				tcp_set_skb_tso_segs(sk, skb, mss_now);
 			}
-			TCP_SKB_CB(skb)->seq += copy;
+			TCP_SKB_CB(skb)->seq += copy; /* 调整序列号 */
 		}
 
 		len += copy;
 
-		if (len >= probe_size)
+		if (len >= probe_size) /* 拷贝了probe_size的数据退出 */
 			break;
 	}
-	tcp_init_tso_segs(sk, nskb, nskb->len);
+	/* 初始化tso_segs, 注意此时是以nskb->len为mss来计算segs的, 
+	 * 也就是探测包的gso_segs只为1
+	 */
+	tcp_init_tso_segs(sk, nskb, nskb->len); 
 
 	/* We're ready to send.  If this fails, the probe will
 	 * be resegmented into mss-sized pieces by tcp_write_xmit(). */
-	TCP_SKB_CB(nskb)->when = tcp_time_stamp;
-	if (!tcp_transmit_skb(sk, nskb, 1, GFP_ATOMIC)) {
+	TCP_SKB_CB(nskb)->when = tcp_time_stamp; /* 发送时间戳 */
+	if (!tcp_transmit_skb(sk, nskb, 1, GFP_ATOMIC)) { /* 发送探测包 */
 		/* Decrement cwnd here because we are sending
 		 * effectively two packets. */
+		/* 这里数据包发送出去了, 因为我们发送了一个两倍当前mss的大包, 
+		 * 所以cwnd要相应减一
+		 */
 		tp->snd_cwnd--;
 		tcp_event_new_data_sent(sk, nskb);
 
+		/* 记录此次探测的MTU值 */
 		icsk->icsk_mtup.probe_size = tcp_mss_to_mtu(sk, nskb->len);
 		tp->mtu_probe.probe_seq_start = TCP_SKB_CB(nskb)->seq;
 		tp->mtu_probe.probe_seq_end = TCP_SKB_CB(nskb)->end_seq;
@@ -2052,6 +2088,9 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	int err;
 
 	/* Inconslusive MTU probe */
+	/* 如果正在使用MTU探测, 这里重传说明探测包丢失了, 
+	 * 所以这里probe_size置0结束探测
+	 */
 	if (icsk->icsk_mtup.probe_size) {
 		icsk->icsk_mtup.probe_size = 0;
 	}

@@ -233,7 +233,7 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	 * complete initialization after this.
 	 */
 	tcp_set_state(sk, TCP_SYN_SENT);
-	err = inet_hash_connect(&tcp_death_row, sk);
+	err = inet_hash_connect(&tcp_death_row, sk); /* 获取本地端口并哈希 */
 	if (err)
 		goto failure;
 
@@ -286,7 +286,7 @@ static void do_pmtu_discovery(struct sock *sk, struct iphdr *iph, u32 mtu)
 	 * send out by Linux are always <576bytes so they should go through
 	 * unfragmented).
 	 */
-	if (sk->sk_state == TCP_LISTEN)
+	if (sk->sk_state == TCP_LISTEN) /* 监听sk不处理 */
 		return;
 
 	/* We don't check in the destentry if pmtu discovery is forbidden
@@ -298,7 +298,7 @@ static void do_pmtu_discovery(struct sock *sk, struct iphdr *iph, u32 mtu)
 	if ((dst = __sk_dst_check(sk, 0)) == NULL)
 		return;
 
-	dst->ops->update_pmtu(dst, mtu);
+	dst->ops->update_pmtu(dst, mtu); /* 调用ip_rt_update_pmtu更新路由缓存的mtu值 */
 
 	/* Something is about to be wrong... Remember soft error
 	 * for the case, if this connection will not able to recover.
@@ -308,16 +308,19 @@ static void do_pmtu_discovery(struct sock *sk, struct iphdr *iph, u32 mtu)
 
 	mtu = dst_mtu(dst);
 
+	/* mtu变小了, 需要更新mss, 
+	 * 并且由于之前数据包设置DF且mss过大, 所以需要进入LOSSS重传 
+	 */
 	if (inet->pmtudisc != IP_PMTUDISC_DONT &&
-	    inet_csk(sk)->icsk_pmtu_cookie > mtu) {
-		tcp_sync_mss(sk, mtu);
+	    inet_csk(sk)->icsk_pmtu_cookie > mtu) { 
+		tcp_sync_mss(sk, mtu); /* 维护mss */
 
 		/* Resend the TCP packet because it's
 		 * clear that the old packet has been
 		 * dropped. This is the new "fast" path mtu
 		 * discovery.
 		 */
-		tcp_simple_retransmit(sk);
+		tcp_simple_retransmit(sk); /* 尝试是否进入LOSS然后重传 */
 	} /* else let the usual retransmit timer handle it */
 }
 
@@ -395,13 +398,14 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
 	case ICMP_PARAMETERPROB:
 		err = EPROTO;
 		break;
-	case ICMP_DEST_UNREACH:
+	case ICMP_DEST_UNREACH: /* ICMP不可达 */
 		if (code > NR_ICMP_UNREACH)
 			goto out;
 
+		/* 设置了DF数据包无法通过(type 3 code 4) */
 		if (code == ICMP_FRAG_NEEDED) { /* PMTU discovery (RFC1191) */
 			if (!sock_owned_by_user(sk))
-				do_pmtu_discovery(sk, iph, info);
+				do_pmtu_discovery(sk, iph, info); /* 处理PMTU, info为ICMP通告的MTU值 */
 			goto out;
 		}
 

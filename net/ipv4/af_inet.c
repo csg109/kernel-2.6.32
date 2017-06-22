@@ -459,7 +459,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	int err;
 
 	/* If the socket has its own bind function then use it. (RAW) */
-	if (sk->sk_prot->bind) {
+	if (sk->sk_prot->bind) { /* TCP没有指定该接口 */
 		err = sk->sk_prot->bind(sk, uaddr, addr_len);
 		goto out;
 	}
@@ -487,7 +487,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 
 	snum = ntohs(addr->sin_port);
 	err = -EACCES;
-	if (snum && snum < PROT_SOCK && !capable(CAP_NET_BIND_SERVICE))
+	if (snum && snum < PROT_SOCK && !capable(CAP_NET_BIND_SERVICE)) /* 超级用户才可绑定1-1023端口 */
 		goto out;
 
 	/*      We keep a pair of addresses. rcv_saddr is the one

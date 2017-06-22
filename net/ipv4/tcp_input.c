@@ -418,11 +418,12 @@ static void tcp_init_buffer_space(struct sock *sk)
 
 	tp->rcvq_space.space = tp->rcv_wnd;
 
-	maxwin = tcp_full_space(sk);
+	maxwin = tcp_full_space(sk); /* 接收缓存换算的接收窗口大小 */
 
 	if (tp->window_clamp >= maxwin) {
-		tp->window_clamp = maxwin;
+		tp->window_clamp = maxwin; /* window_clamp最大为maxwin */
 
+		/* tcp_app_win默认31, 所以window_clamp几乎默认为maxwin */
 		if (sysctl_tcp_app_win && maxwin > 4 * tp->advmss)
 			tp->window_clamp = max(maxwin -
 					       (maxwin >> sysctl_tcp_app_win),
@@ -3085,8 +3086,8 @@ static void tcp_mtup_probe_failed(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
-	icsk->icsk_mtup.search_high = icsk->icsk_mtup.probe_size - 1;
-	icsk->icsk_mtup.probe_size = 0;
+	icsk->icsk_mtup.search_high = icsk->icsk_mtup.probe_size - 1; /* 更新探测上限, 因为probe_size过大所以减一 */
+	icsk->icsk_mtup.probe_size = 0; /* 结束mtu探测 */
 }
 
 static void tcp_mtup_probe_success(struct sock *sk)
@@ -3096,22 +3097,26 @@ static void tcp_mtup_probe_success(struct sock *sk)
 
 	/* FIXME: breaks with very large cwnd */
 	tp->prior_ssthresh = tcp_current_ssthresh(sk);
+	/* 因为探测包是以两倍mss发送的, 所以将cwnd修改为大约原来的一半
+	 * 即cwnd = cwnd * (mtu_old / 2 * mtu_old) (考虑这里是用mtu比例的,所以不是正好一半)
+	 */
 	tp->snd_cwnd = tp->snd_cwnd *
 		       tcp_mss_to_mtu(sk, tp->mss_cache) /
 		       icsk->icsk_mtup.probe_size;
 	tp->snd_cwnd_cnt = 0;
 	tp->snd_cwnd_stamp = tcp_time_stamp;
-	tp->rcv_ssthresh = tcp_current_ssthresh(sk);
+	tp->rcv_ssthresh = tcp_current_ssthresh(sk); /* 接收窗口阈值也要相应调整 */
 
-	icsk->icsk_mtup.search_low = icsk->icsk_mtup.probe_size;
-	icsk->icsk_mtup.probe_size = 0;
-	tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
+	icsk->icsk_mtup.search_low = icsk->icsk_mtup.probe_size; /* 记录最小MTU的值 */
+	icsk->icsk_mtup.probe_size = 0; /* 置0表示探测完成 */
+	tcp_sync_mss(sk, icsk->icsk_pmtu_cookie); /* 保存探测结果 */
 }
 
 /* Do a simple retransmit without using the backoff mechanisms in
  * tcp_timer. This is used for path mtu discovery.
  * The socket is already locked here.
  */
+/* 用于PMTU发现mtu变小后, 进入LOSS重传所有之前mss过大的数据包 */
 void tcp_simple_retransmit(struct sock *sk)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -3120,24 +3125,33 @@ void tcp_simple_retransmit(struct sock *sk)
 	unsigned int mss = tcp_current_mss(sk);
 	u32 prior_lost = tp->lost_out;
 
+	/* 循环所有已发送的数据如果存在之前mss过大的包, 标记为丢失等待重传 */
 	tcp_for_write_queue(skb, sk) {
 		if (skb == tcp_send_head(sk))
 			break;
+		/* skb的mss如果大于当前的mss且没有被sack过,
+		 * 说明之前发送过大的mss被丢弃了, 需要重传
+		 */
 		if (tcp_skb_seglen(skb) > mss &&
 		    !(TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_ACKED)) {
+			/* 已经重传过的去掉标志,减少相应retrans_out */
 			if (TCP_SKB_CB(skb)->sacked & TCPCB_SACKED_RETRANS) {
 				TCP_SKB_CB(skb)->sacked &= ~TCPCB_SACKED_RETRANS;
 				tp->retrans_out -= tcp_skb_pcount(skb);
 			}
-			tcp_skb_mark_lost_uncond_verify(tp, skb);
+			tcp_skb_mark_lost_uncond_verify(tp, skb); /* 标记丢失 */
 		}
 	}
 
-	tcp_clear_retrans_hints_partial(tp);
+	tcp_clear_retrans_hints_partial(tp); /* 重置重传标记指针 */
 
+	/* lost_out没有增加说明以上没有新增的标记丢失, 
+	 * 即已发送的数据包没有因为mtu过大被丢失, 直接返回 
+	 */
 	if (prior_lost == tp->lost_out)
 		return;
 
+	/* reno中限制下sacked_out */
 	if (tcp_is_reno(tp))
 		tcp_limit_reno_sacked(tp);
 
@@ -3148,6 +3162,7 @@ void tcp_simple_retransmit(struct sock *sk)
 	 * in network, but units changed and effective
 	 * cwnd/ssthresh really reduced now.
 	 */
+	/*  进入LOSS状态(不改变cwnd) */
 	if (icsk->icsk_ca_state != TCP_CA_Loss) {
 		tp->high_seq = tp->snd_nxt;
 		tp->snd_ssthresh = tcp_current_ssthresh(sk);
@@ -3155,7 +3170,7 @@ void tcp_simple_retransmit(struct sock *sk)
 		tp->undo_marker = 0;
 		tcp_set_ca_state(sk, TCP_CA_Loss);
 	}
-	tcp_xmit_retransmit_queue(sk);
+	tcp_xmit_retransmit_queue(sk); /* 重传 */
 }
 
 /* This function implements the PRR algorithm, specifcally the PRR-SSRB
@@ -3380,12 +3395,12 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked,
 
 		/* MTU probe failure: don't reduce cwnd */
 		if (icsk->icsk_ca_state < TCP_CA_CWR &&
-		    icsk->icsk_mtup.probe_size &&
-		    tp->snd_una == tp->mtu_probe.probe_seq_start) {
-			tcp_mtup_probe_failed(sk);
+		    icsk->icsk_mtup.probe_size && /* 正在MTU探测 */
+		    tp->snd_una == tp->mtu_probe.probe_seq_start) { /* 探测包丢失 */
+			tcp_mtup_probe_failed(sk); /* MTU探测失败 */
 			/* Restores the reduction we did in tcp_mtup_probe() */
-			tp->snd_cwnd++;
-			tcp_simple_retransmit(sk);
+			tp->snd_cwnd++; /* 之前在tcp_mtu_probe中发送了2倍mss的数据包后cwnd减一, 这里失败了加回来 */
+			tcp_simple_retransmit(sk); /* 进入LOSS重传 */
 			return;
 		}
 
@@ -3648,9 +3663,10 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 		const struct tcp_congestion_ops *ca_ops
 			= inet_csk(sk)->icsk_ca_ops;
 
-		if (unlikely(icsk->icsk_mtup.probe_size &&
-			     !after(tp->mtu_probe.probe_seq_end, tp->snd_una))) {
-			tcp_mtup_probe_success(sk);
+		/* 处理mtu探测的结果 */
+		if (unlikely(icsk->icsk_mtup.probe_size && /* 如果正在MTU探测 */
+			     !after(tp->mtu_probe.probe_seq_end, tp->snd_una))) { /* 探测包被完整确认了 */
+			tcp_mtup_probe_success(sk); /* 探测成功 */
 		}
 
 		tcp_ack_update_rtt(sk, flag, seq_rtt); /* 更新RTT和RTO */
@@ -3662,10 +3678,10 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 			int delta;
 
 			/* Non-retransmitted hole got filled? That's reordering */
-			/* reord为本次被确认的（并且没有被sack和重传过的)第一个数据段相对之前una的偏移的段个数，
+			/* reord为本次被确认的(并且没有被sack和重传过的)第一个数据段相对之前una的偏移的段个数，
 			 * prior_fackets为之前的facket_out，
-			 * 前者小于后者的话表示先收到了后面的数据段（SACK最高的那个数据包），
-			 * 然后才收到了前面的数据包（新确认的并且没有被SACK和重传过的），
+			 * 前者小于后者的话表示先收到了后面的数据段(SACK最高的那个数据包)，
+			 * 然后才收到了前面的数据包(新确认的并且没有被SACK和重传过的)，
 			 * 说明出现乱序, tp->fackets_out - reord 相减的含义是乱序的长度
 			 */
 			if (reord < prior_fackets)

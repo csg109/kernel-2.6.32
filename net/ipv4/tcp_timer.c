@@ -117,17 +117,18 @@ static void tcp_mtu_probing(struct inet_connection_sock *icsk, struct sock *sk)
 {
 	/* Black hole detection */
 	if (sysctl_tcp_mtu_probing) {
+		/* 如果mtu探测未开启(即sysctl_tcp_mtu_probing为1时只在路由黑洞时使用探测) */
 		if (!icsk->icsk_mtup.enabled) {
-			icsk->icsk_mtup.enabled = 1;
+			icsk->icsk_mtup.enabled = 1; /* 开启MTU探测 */
 			tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
 		} else {
 			struct tcp_sock *tp = tcp_sk(sk);
 			int mss;
 
-			mss = tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_low) >> 1;
-			mss = min(sysctl_tcp_base_mss, mss);
-			mss = max(mss, 68 - tp->tcp_header_len);
-			icsk->icsk_mtup.search_low = tcp_mss_to_mtu(sk, mss);
+			mss = tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_low) >> 1; /* mss减一半 */
+			mss = min(sysctl_tcp_base_mss, mss); /* 且最大512 */
+			mss = max(mss, 68 - tp->tcp_header_len); /* 且最小48 */
+			icsk->icsk_mtup.search_low = tcp_mss_to_mtu(sk, mss); /* 设置下限 */
 			tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
 		}
 	}

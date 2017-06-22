@@ -249,7 +249,7 @@ struct ubuf_info {
  */
 struct skb_shared_info {
 	atomic_t	dataref;	/* 数据引用计数，用来判断多个skb共用数据区 */
-	unsigned short	nr_frags;	/* frags的个数, 即sk_buff分页段的数目 */
+	unsigned short	nr_frags;	/* frags的个数, 即sk_buff分页的数目 */
 	unsigned short	gso_size; 	/* 每个数据段的大小, 即MSS */
 	/* Warning: this field is not always filled in (UFO)! */
 	unsigned short	gso_segs;	/* skb被分割成多少个数据段 */

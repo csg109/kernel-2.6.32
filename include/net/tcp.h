@@ -523,6 +523,7 @@ extern unsigned int tcp_current_mss(struct sock *sk);
 /* Bound MSS / TSO packet size with the half of the window */
 static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 {
+	/* 如果大于接收窗口的一半则返回接收窗口一半 */
 	if (tp->max_window && pktsize > (tp->max_window >> 1))
 		return max(tp->max_window >> 1, 68U - tp->tcp_header_len);
 	else

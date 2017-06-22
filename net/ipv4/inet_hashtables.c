@@ -295,6 +295,7 @@ out:
 EXPORT_SYMBOL_GPL(__inet_lookup_established);
 
 /* called with local bh disabled */
+/* 判断正在使用中的端口是否允许重用 */
 static int __inet_check_established(struct inet_timewait_death_row *death_row,
 				    struct sock *sk, __u16 lport,
 				    struct inet_timewait_sock **twp)
@@ -304,59 +305,75 @@ static int __inet_check_established(struct inet_timewait_death_row *death_row,
 	__be32 daddr = inet->rcv_saddr;
 	__be32 saddr = inet->daddr;
 	int dif = sk->sk_bound_dev_if;
-	INET_ADDR_COOKIE(acookie, saddr, daddr)
-	const __portpair ports = INET_COMBINED_PORTS(inet->dport, lport);
+	INET_ADDR_COOKIE(acookie, saddr, daddr) /* 根据目的IP和源IP，生成一个64位的值 */
+	const __portpair ports = INET_COMBINED_PORTS(inet->dport, lport); /* 根据目的端口和源端口，生成一个32位的值 */
 	struct net *net = sock_net(sk);
-	unsigned int hash = inet_ehashfn(net, daddr, lport, saddr, inet->dport);
-	struct inet_ehash_bucket *head = inet_ehash_bucket(hinfo, hash);
-	spinlock_t *lock = inet_ehash_lockp(hinfo, hash);
+	unsigned int hash = inet_ehashfn(net, daddr, lport, saddr, inet->dport); /* 通过连接的四元组，计算得到一个哈希值 */
+	struct inet_ehash_bucket *head = inet_ehash_bucket(hinfo, hash); /* 根据计算得到的哈希值，从哈希表中找到对应的哈希桶 */
+	spinlock_t *lock = inet_ehash_lockp(hinfo, hash); /* 根据计算得到的哈希值，从哈希表中找到对应哈希桶的锁 */
 	struct sock *sk2;
 	const struct hlist_nulls_node *node;
 	struct inet_timewait_sock *tw;
 
-	spin_lock(lock);
+	spin_lock(lock); /* 锁住哈希桶 */
 
 	/* Check TIME-WAIT sockets first. */
+	/* 先查找time_wait哈希桶 */
 	sk_nulls_for_each(sk2, node, &head->twchain) {
 		tw = inet_twsk(sk2);
 
+		/* 如果连接完全匹配：四元组相同、绑定的设备相同 */
 		if (INET_TW_MATCH(sk2, net, hash, acookie,
 					saddr, daddr, ports, dif)) {
+			/* 四元组一样，满足以下条件就允许复用：
+			 * 1. 使用TCP Timestamp选项
+			 * 2. 符合以下任一情况即可：
+			 *   2.1 twp == NULL，主动建立连接时，如果用户已经绑定端口了，那么会符合
+			 *   2.2 启用tcp_tw_reuse，且距离上次收到数据包的时间大于1s
+			 */
 			if (twsk_unique(sk, sk2, twp))
-				goto unique;
+				goto unique; /* 可以复用 */
 			else
-				goto not_unique;
+				goto not_unique; /* 不允许复用 */
 		}
 	}
 	tw = NULL;
 
 	/* And established part... */
+	/* 再查找established哈希桶 */
 	sk_nulls_for_each(sk2, node, &head->chain) {
+		/* 如果连接完全匹配：四元组相同、绑定的设备相同 */
 		if (INET_MATCH(sk2, net, hash, acookie,
 					saddr, daddr, ports, dif))
-			goto not_unique;
+			goto not_unique; /* 有相同的四元组，不能复用 */
 	}
 
 unique:
+	/* 走到这里有两种情况
+	 * 1. 遍历玩哈希桶，都没有找到四元组一样的。 
+	 * 2. 找到了四元组一样的，但是符合重用的条件。
+	 */
+
 	/* Must record num and sport now. Otherwise we will see
 	 * in hash table socket with a funny identity. */
-	inet->num = lport;
-	inet->sport = htons(lport);
-	sk->sk_hash = hash;
-	WARN_ON(!sk_unhashed(sk));
-	__sk_nulls_add_node_rcu(sk, &head->chain);
+	inet->num = lport; /* 保存源端口 */
+	inet->sport = htons(lport); /* 网络序的源端口 */
+	sk->sk_hash = hash; /* 保存ehash表的哈希值 */
+	WARN_ON(!sk_unhashed(sk)); /* 要求新连接sk还没被链入ehash哈希表中 */
+	__sk_nulls_add_node_rcu(sk, &head->chain); /* 把此sk链入ehash哈希表中 */
 	spin_unlock(lock);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
+	/* 如果twp不为NULL，各种哈希表删除操作，就交给调用函数来处理 */
 	if (twp) {
 		*twp = tw;
 		NET_INC_STATS_BH(net, LINUX_MIB_TIMEWAITRECYCLED);
 	} else if (tw) {
 		/* Silly. Should hash-dance instead... */
-		inet_twsk_deschedule(tw, death_row);
+		inet_twsk_deschedule(tw, death_row); /* 把tw从death_row、ehash、bhash的哈希表中删除，更新tw的引用计数 */
 		NET_INC_STATS_BH(net, LINUX_MIB_TIMEWAITRECYCLED);
 
-		inet_twsk_put(tw);
+		inet_twsk_put(tw); /* 释放tw结构体 */
 	}
 
 	return 0;
@@ -366,6 +383,7 @@ not_unique:
 	return -EADDRNOTAVAIL;
 }
 
+/* 根据源IP、目的IP、目的端口，采用MD5计算出一个随机数，作为端口的初始偏移值 */
 static inline u32 inet_sk_port_offset(const struct sock *sk)
 {
 	const struct inet_sock *inet = inet_sk(sk);
@@ -453,49 +471,61 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 		void (*hash)(struct sock *sk))
 {
 	struct inet_hashinfo *hinfo = death_row->hashinfo;
-	const unsigned short snum = inet_sk(sk)->num;
+	const unsigned short snum = inet_sk(sk)->num; /* 本端端口 */
 	struct inet_bind_hashbucket *head;
 	struct inet_bind_bucket *tb;
 	int ret;
 	struct net *net = sock_net(sk);
 
-	if (!snum) {
+	if (!snum) { /* snum为0时，表示用户没有绑定端口，默认让系统自动选取端口 */
 		int i, remaining, low, high, port;
-		static u32 hint;
+		static u32 hint; /* 用于保存上次查找的位置 */
 		u32 offset = hint + port_offset;
 		struct hlist_node *node;
 		struct inet_timewait_sock *tw = NULL;
 
+		/* 系统自动分配时，获取端口号的取值范围 */
 		inet_get_local_port_range(&low, &high);
-		remaining = (high - low) + 1;
+		remaining = (high - low) + 1; /* 取值范围内端口号的个数 */
 
 		local_bh_disable();
 		for (i = 1; i <= remaining; i++) {
+			/* 根据MD5计算得到的port_offset值，以及hint，获取范围内的一个端口 */
 			port = low + (i + offset) % remaining;
+			/* 如果此端口号属于保留的，那么直接跳过 */
 			if (inet_is_reserved_local_port(port))
 				continue;
+			/* 根据端口号，找到所在的哈希桶 */
 			head = &hinfo->bhash[inet_bhashfn(net, port,
 					hinfo->bhash_size)];
-			spin_lock(&head->lock);
+			spin_lock(&head->lock); /* 锁住此哈希桶 */
 
 			/* Does not bother with rcv_saddr checks,
 			 * because the established check is already
 			 * unique enough.
 			 */
+			/* 从头遍历哈希桶 */
 			inet_bind_bucket_for_each(tb, node, &head->chain) {
+				/* 如果此端口已经被使用了 */
 				if (ib_net(tb) == net && tb->port == port) {
+					/* 不允许使用已经被bind()绑定的端口，无论此端口是否能够被复用 */
 					if (tb->fastreuse >= 0)
 						goto next_port;
 					WARN_ON(hlist_empty(&tb->owners));
+					/* 检查端口是否允许重用 */
 					if (!check_established(death_row, sk,
 								port, &tw))
-						goto ok;
-					goto next_port;
+						goto ok; /* 成功，该端口可以被重复使用 */
+					goto next_port; /* 失败，下一个端口 */
 				}
 			}
 
+			/* 走到这里，表示该端口尚未被使用
+			 * 创建一个inet_bind_bucket实例，并把它加入到哈希桶中
+			 */
 			tb = inet_bind_bucket_create(hinfo->bind_bucket_cachep,
 					net, head, port);
+			/* 如果内存不够，则退出端口选择, 会导致connect()失败，返回-EADDRNOTAVAIL */
 			if (!tb) {
 				spin_unlock(&head->lock);
 				break;
@@ -508,39 +538,48 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 		}
 		local_bh_enable();
 
+		/* 有两种可能：内存不够、端口区间内的端口号用光 */
 		return -EADDRNOTAVAIL;
 
 ok:
-		hint += i;
+		hint += i; /* 下一次connect()时，查找端口增加了这段偏移 */
 
 		/* Head lock still held and bh's disabled */
+		/* 把tb赋值给icsk->icsk_bind_hash，更新inet->inet_num，
+		 * 把sock链入tb->owners哈希链中, 
+		 * 更新该端口的绑定次数，系统总的端口绑定次数 
+		 */
 		inet_bind_hash(sk, tb, port);
+		/* 如果sk尚未链入ehash哈希表中 */
 		if (sk_unhashed(sk)) {
-			inet_sk(sk)->sport = htons(port);
-			hash(sk);
+			inet_sk(sk)->sport = htons(port); /* 保存本地端口 */
+			hash(sk); /* 调用__inet_hash_nolisten把sk链入到ehash哈希表中，把tw从ehash表中删除 */
 		}
 		spin_unlock(&head->lock);
 
 		if (tw) {
+			/* 把tw从tcp_death_row、ehash、bhash的哈希表中删除，更新tw的引用计数 */
 			inet_twsk_deschedule(tw, death_row);
-			inet_twsk_put(tw);
+			inet_twsk_put(tw); /* 释放tw结构体 */
 		}
 
 		ret = 0;
 		goto out;
 	}
 
-	head = &hinfo->bhash[inet_bhashfn(net, snum, hinfo->bhash_size)];
-	tb  = inet_csk(sk)->icsk_bind_hash;
+	/* 走到这里，表示用户已经自己绑定了端口 */
+	head = &hinfo->bhash[inet_bhashfn(net, snum, hinfo->bhash_size)]; /* 端口所在的哈希桶 */
+	tb  = inet_csk(sk)->icsk_bind_hash; /* 端口的存储实例 */
 	spin_lock_bh(&head->lock);
+	/* 如果sk是此端口的使用者队列的第一个节点 */
 	if (sk_head(&tb->owners) == sk && !sk->sk_bind_node.next) {
-		hash(sk);
+		hash(sk); /* 计算sk在ehash中的索引，赋值给sk->sk_hash，把sk链入到ehash表中 */
 		spin_unlock_bh(&head->lock);
 		return 0;
 	} else {
 		spin_unlock(&head->lock);
 		/* No definite answer... Walk to established hash table */
-		ret = check_established(death_row, sk, snum, NULL);
+		ret = check_established(death_row, sk, snum, NULL); /*  查看是否有可以重用的端口 */
 out:
 		local_bh_enable();
 		return ret;

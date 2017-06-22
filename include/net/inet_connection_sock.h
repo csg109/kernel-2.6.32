@@ -108,7 +108,7 @@ struct inet_connection_sock {
 	__u8			  icsk_backoff;			/* 指数退避 */
 	__u8			  icsk_syn_retries;
 	__u8			  icsk_probes_out;		/* 探测次数 */
-	__u16			  icsk_ext_hdr_len;
+	__u16			  icsk_ext_hdr_len;		/* IP头选项大小 */
 	struct {
 		/* ACK的发送状态标志，可以表示四种情况： 
 		 * 1. ICSK_ACK_SCHED：目前有ACK需要发送 
@@ -157,7 +157,7 @@ struct inet_connection_sock {
 		int		  search_low;
 
 		/* Information on the current probe. */
-		int		  probe_size;
+		int		  probe_size;  /* MTU探测包的大小(mtu), 有值说明正在进行探测 */
 	} icsk_mtup;
 	u32			  icsk_ca_priv[16]; 		/* 放置拥塞控制算法的参数 */
 #define ICSK_CA_PRIV_SIZE	(16 * sizeof(u32))

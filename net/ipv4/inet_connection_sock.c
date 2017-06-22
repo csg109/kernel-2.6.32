@@ -58,7 +58,7 @@ int inet_csk_bind_conflict(const struct sock *sk,
 	const __be32 sk_rcv_saddr = inet_rcv_saddr(sk);
 	struct sock *sk2;
 	struct hlist_node *node;
-	int reuse = sk->sk_reuse;
+	int reuse = sk->sk_reuse; /* SO_REUSEADDR，表示处于TIME_WAIT状态的端口允许重用 */
 
 	/*
 	 * Unlike other sk lookup places we do not check
@@ -67,18 +67,25 @@ int inet_csk_bind_conflict(const struct sock *sk,
 	 * one this bucket belongs to.
 	 */
 
-	sk_for_each_bound(sk2, node, &tb->owners) {
+	sk_for_each_bound(sk2, node, &tb->owners) { /*  遍历此端口上的sock */
+		/* 冲突的条件1：不是同一socket、绑定在相同的设备上 */
 		if (sk != sk2 &&
 		    !inet_v6_ipv6only(sk2) &&
 		    (!sk->sk_bound_dev_if ||
 		     !sk2->sk_bound_dev_if ||
 		     sk->sk_bound_dev_if == sk2->sk_bound_dev_if)) {
+			/* 冲突的条件2：绑定在相同的IP上 
+			 * 冲突的条件3（符合一个即满足）：
+			 * 	3.1 本socket不允许重用
+			 * 	3.2 链表中的socket不允许重用
+			 * 	3.3 链表中的socket处于监听状态
+			 */
 			if (!reuse || !sk2->sk_reuse ||
 			    sk2->sk_state == TCP_LISTEN) {
 				const __be32 sk2_rcv_saddr = inet_rcv_saddr(sk2);
 				if (!sk2_rcv_saddr || !sk_rcv_saddr ||
 				    sk2_rcv_saddr == sk_rcv_saddr)
-					break;
+					break; /* 冲突了 */
 			}
 		}
 	}
@@ -100,22 +107,23 @@ int inet_csk_get_port(struct sock *sk, unsigned short snum)
 	struct net *net = sock_net(sk);
 	int smallest_size = -1, smallest_rover;
 
-	local_bh_disable();
+	local_bh_disable(); /* 禁止下半部，防止和进程冲突  */
 	if (!snum) { /* 这种情况就是随机绑定一个没有使用的端口 */
 		int remaining, rover, low, high;
 
 again:
 		inet_get_local_port_range(&low, &high); /* 获得可用随机端口最大最小范围 */
 		remaining = (high - low) + 1; 		/* 记录可用端口数 */
-		smallest_rover = rover = net_random() % remaining + low; /* 范围内随机端口 */
+		smallest_rover = rover = net_random() % remaining + low; /* 范围内随机选择一个端口 */
 
 		smallest_size = -1;
 		do {
 			if (inet_is_reserved_local_port(rover)) /* 被保留的端口 */
 				goto next_nolock;
+			/* 根据端口号，确定所在的哈希桶 */
 			head = &hashinfo->bhash[inet_bhashfn(net, rover,
 					hashinfo->bhash_size)]; /* 取得链表头 */
-			spin_lock(&head->lock);
+			spin_lock(&head->lock); /* 锁住哈希桶 */
 
 			/* 这个循环的过程其实就是从上面得到hash桶表，
 			 * 循环查找是否同样的网络空间下我们要设置的端口是否已经被占用了.
@@ -124,8 +132,8 @@ again:
 			 * 此时struct inet_bind_bucket局部变量指针tb指向了能够使用的hash节点,
 			 * 接着端口号snum就指向了这个参考值。 
 			 */
-			inet_bind_bucket_for_each(tb, node, &head->chain)
-				if (ib_net(tb) == net && tb->port == rover) {
+			inet_bind_bucket_for_each(tb, node, &head->chain) /* 从头遍历哈希桶 */
+				if (ib_net(tb) == net && tb->port == rover) { /* 如果端口被使用了 */
 				    	/* 如果当前套接字没有设置reuse或者状态是listen，或者...
 				    	 * 那么就不做下一步的抉择，因为那样没有意义，
 				    	 * 所谓下一步的抉择主要就是寻找一个拥有最小使用者的inet_bind_bucket，
@@ -136,8 +144,8 @@ again:
 					    sk->sk_reuse &&
 					    sk->sk_state != TCP_LISTEN &&
 					    (tb->num_owners < smallest_size || smallest_size == -1)) {
-						smallest_size = tb->num_owners;
-						smallest_rover = rover;
+						smallest_size = tb->num_owners; /* 记下这个端口使用者的个数 */
+						smallest_rover = rover; /* 记下这个端口 */
 						/* 如果绑定的套接字数量已经超过了设置的最大数量，
 						 * 那么就不再继续搜索了 
 						 */
@@ -146,13 +154,14 @@ again:
 							goto tb_found;
 						}
 					}
-					if (!inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) {
+					/*  检查是否有端口绑定冲突，该端口是否能重用 */
+					if (!inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) { /* TCP为inet_csk_bind_conflict */
 						snum = rover;
 						goto tb_found;
 					}
-					goto next;
+					goto next; /* 此端口不可重用，看下一个 */
 				}
-			break;
+			break; /* 找到了没被用的端口, 退出 */
 		next:
 			spin_unlock(&head->lock);
 		next_nolock:
@@ -193,33 +202,36 @@ have_snum:
 	tb = NULL;
 	goto tb_not_found;
 tb_found:
-	if (!hlist_empty(&tb->owners)) {
+	if (!hlist_empty(&tb->owners)) { /* 端口上有绑定sock时 */
 		if (tb->fastreuse > 0 &&
 		    sk->sk_reuse && sk->sk_state != TCP_LISTEN &&
 		    smallest_size == -1) {
 			goto success;
 		} else {
 			ret = 1;
-			if (inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) {
+			if (inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) { /* 端口绑定冲突 */
+				/* 自动分配的端口绑定冲突了，再次尝试，最多重试5次 */
 				if (sk->sk_reuse && sk->sk_state != TCP_LISTEN &&
 				    smallest_size != -1 && --attempts >= 0) {
 					spin_unlock(&head->lock);
 					goto again;
 				}
-				goto fail_unlock;
+				goto fail_unlock; /* 失败 */
 			}
 		}
 	}
 tb_not_found:
 	ret = 1;
+	/* 申请和初始化一个inet_bind_bucket结构 */
 	if (!tb && (tb = inet_bind_bucket_create(hashinfo->bind_bucket_cachep,
 					net, head, snum)) == NULL)
 		goto fail_unlock;
-	if (hlist_empty(&tb->owners)) {
+	if (hlist_empty(&tb->owners)) { /* 如果是该端口的第一个sock */
 		if (sk->sk_reuse && sk->sk_state != TCP_LISTEN)
-			tb->fastreuse = 1;
+			tb->fastreuse = 1; /* 启用了REUSEADDR */
 		else
 			tb->fastreuse = 0;
+	/* 如果不是第一个sock, 那么需要所有sock都开启REUSEADDR才能启用复用 */
 	} else if (tb->fastreuse &&
 		   (!sk->sk_reuse || sk->sk_state == TCP_LISTEN))
 		tb->fastreuse = 0;
